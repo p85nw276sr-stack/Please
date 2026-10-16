@@ -1,0 +1,2664 @@
+--[[
+    installerScripts  v2.1   |   универсальный скрипт для Delta
+    Стиль: Китай (драконы, жемчужина, золото и киноварь)
+
+    Меню открывается / закрывается:
+      - тап по жемчужине с драконами (её можно перетаскивать)
+      - RightShift на ПК
+
+    Вкладки:
+      Player          - Fly, WalkSpeed, JumpPower, Infinite Jump, Noclip, God Mode
+      Visuals         - Aimbot (FOV, плавность, проверки) и ESP Lines (гибкая настройка)
+      FE Function     - Copy Avatar (по нику, даже если игрока нет на сервере)
+      Social Networks - зарезервировано под следующее обновление
+      Settings        - тема, размер меню, Anti-AFK, Reset, Rejoin, выгрузка
+
+    Полёт:
+      ПК:      WASD, Space/E - вверх, Q/Ctrl - вниз
+      Телефон: джойстик + кнопки ▲ ▼ справа (появляются при включении Fly)
+]]
+
+----------------------------------------------------------------
+-- Повторный запуск: убираем старую версию (и старый DeltaHub)
+----------------------------------------------------------------
+local env = (getgenv and getgenv()) or _G
+for _, key in ipairs({ "InstallerScriptsUnload", "DeltaHubUnload" }) do
+	if env[key] then pcall(env[key]) end
+end
+
+----------------------------------------------------------------
+-- Сервисы
+----------------------------------------------------------------
+local Players = game:GetService("Players")
+local UIS = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local LocalPlayer = Players.LocalPlayer
+
+----------------------------------------------------------------
+-- Темы
+----------------------------------------------------------------
+local rgb = Color3.fromRGB
+
+local THEMES = {
+	Dragon = {
+		bg = rgb(15, 9, 11), side = rgb(23, 12, 14), element = rgb(36, 19, 21),
+		elementHover = rgb(52, 27, 29), stroke = rgb(104, 44, 42), off = rgb(72, 46, 48),
+		text = rgb(252, 240, 224), sub = rgb(180, 148, 138),
+		accent = rgb(214, 48, 49), accent2 = rgb(246, 196, 84),
+	},
+	Jade = {
+		bg = rgb(8, 16, 14), side = rgb(11, 23, 20), element = rgb(17, 35, 30),
+		elementHover = rgb(25, 50, 43), stroke = rgb(40, 96, 80), off = rgb(42, 66, 58),
+		text = rgb(230, 248, 240), sub = rgb(122, 164, 148),
+		accent = rgb(28, 170, 124), accent2 = rgb(242, 204, 100),
+	},
+	Azure = {
+		bg = rgb(9, 12, 22), side = rgb(12, 17, 31), element = rgb(19, 26, 46),
+		elementHover = rgb(28, 37, 64), stroke = rgb(52, 70, 126), off = rgb(46, 57, 88),
+		text = rgb(232, 238, 252), sub = rgb(132, 144, 184),
+		accent = rgb(72, 120, 255), accent2 = rgb(110, 220, 255),
+	},
+	Sakura = {
+		bg = rgb(20, 10, 16), side = rgb(28, 13, 21), element = rgb(41, 20, 31),
+		elementHover = rgb(58, 29, 44), stroke = rgb(112, 52, 84), off = rgb(78, 48, 64),
+		text = rgb(255, 238, 244), sub = rgb(188, 148, 166),
+		accent = rgb(236, 92, 144), accent2 = rgb(255, 208, 222),
+	},
+}
+local THEME_ORDER = { "Dragon", "Jade", "Azure", "Sakura" }
+
+local THEME = {}
+for k, v in pairs(THEMES.Dragon) do THEME[k] = v end
+
+local bindings = {}   -- свойства, которые сами меняют цвет при смене темы
+local refreshers = {} -- функции, которые перекрашивают сложные элементы
+
+----------------------------------------------------------------
+-- Вспомогательные функции
+----------------------------------------------------------------
+local connections = {}
+local function connect(signal, fn)
+	local c = signal:Connect(fn)
+	table.insert(connections, c)
+	return c
+end
+
+-- new("Frame", { BackgroundColor3 = "@bg" })  ->  цвет берётся из темы и меняется вместе с ней
+local function new(class, props, parent)
+	local inst = Instance.new(class)
+	for k, v in pairs(props or {}) do
+		if type(v) == "string" and v:sub(1, 1) == "@" then
+			local key = v:sub(2)
+			inst[k] = THEME[key]
+			table.insert(bindings, { inst = inst, prop = k, key = key })
+		else
+			inst[k] = v
+		end
+	end
+	if parent then inst.Parent = parent end
+	return inst
+end
+
+local function tween(obj, t, props, style, dir)
+	local tw = TweenService:Create(
+		obj,
+		TweenInfo.new(t, style or Enum.EasingStyle.Quint, dir or Enum.EasingDirection.Out),
+		props
+	)
+	tw:Play()
+	return tw
+end
+
+local function corner(parent, r)
+	return new("UICorner", { CornerRadius = UDim.new(0, r) }, parent)
+end
+
+local function roundCorner(parent)
+	return new("UICorner", { CornerRadius = UDim.new(0.5, 0) }, parent)
+end
+
+local function stroke(parent, color, thickness, transparency)
+	return new("UIStroke", {
+		Color = color,
+		Thickness = thickness or 1,
+		Transparency = transparency or 0,
+		ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+	}, parent)
+end
+
+-- Градиент в цветах темы. mode: nil (accent->accent2), "loop" (accent, accent2, accent), "shine" (золото с бликом)
+local function accentGradient(parent, rotation, mode)
+	local g = new("UIGradient", { Rotation = rotation or 0 }, parent)
+	local function refresh()
+		if mode == "loop" then
+			g.Color = ColorSequence.new({
+				ColorSequenceKeypoint.new(0, THEME.accent),
+				ColorSequenceKeypoint.new(0.5, THEME.accent2),
+				ColorSequenceKeypoint.new(1, THEME.accent),
+			})
+		elseif mode == "shine" then
+			g.Color = ColorSequence.new({
+				ColorSequenceKeypoint.new(0, THEME.accent2),
+				ColorSequenceKeypoint.new(0.5, THEME.accent2:Lerp(Color3.new(1, 1, 1), 0.8)),
+				ColorSequenceKeypoint.new(1, THEME.accent2),
+			})
+		else
+			g.Color = ColorSequence.new(THEME.accent, THEME.accent2)
+		end
+	end
+	refresh()
+	table.insert(refreshers, refresh)
+	return g
+end
+
+local function setTheme(name)
+	local t = THEMES[name]
+	if not t then return end
+	for k, v in pairs(t) do THEME[k] = v end
+	for _, b in ipairs(bindings) do
+		pcall(function() tween(b.inst, 0.5, { [b.prop] = THEME[b.key] }) end)
+	end
+	for _, fn in ipairs(refreshers) do pcall(fn) end
+end
+
+local function isPress(input)
+	return input.UserInputType == Enum.UserInputType.MouseButton1
+		or input.UserInputType == Enum.UserInputType.Touch
+end
+
+local function isMove(input)
+	return input.UserInputType == Enum.UserInputType.MouseMovement
+		or input.UserInputType == Enum.UserInputType.Touch
+end
+
+-- Перетаскивание (мышь и палец). onClick - если почти не двигали, onEnd - при отпускании.
+local function makeDraggable(handle, target, onClick, onEnd)
+	local dragging, dragStart, startPos, moved = false, nil, nil, 0
+	connect(handle.InputBegan, function(input)
+		if isPress(input) then
+			dragging = true
+			moved = 0
+			dragStart = input.Position
+			startPos = target.Position
+		end
+	end)
+	connect(UIS.InputChanged, function(input)
+		if dragging and isMove(input) then
+			local delta = input.Position - dragStart
+			moved = math.max(moved, delta.Magnitude)
+			target.Position = UDim2.new(
+				startPos.X.Scale, startPos.X.Offset + delta.X,
+				startPos.Y.Scale, startPos.Y.Offset + delta.Y
+			)
+		end
+	end)
+	connect(UIS.InputEnded, function(input)
+		if dragging and isPress(input) then
+			dragging = false
+			if onEnd then onEnd() end
+			if onClick and moved < 6 then onClick() end
+		end
+	end)
+end
+
+----------------------------------------------------------------
+-- ScreenGui
+----------------------------------------------------------------
+local gui = new("ScreenGui", {
+	Name = "installerScripts",
+	ResetOnSpawn = false,
+	IgnoreGuiInset = true,
+	ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+	DisplayOrder = 999,
+})
+do
+	local ok = pcall(function()
+		gui.Parent = (gethui and gethui()) or game:GetService("CoreGui")
+	end)
+	if not ok or not gui.Parent then
+		gui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+	end
+end
+
+-- Слой под интерфейсом: линии ESP и круг FOV
+local espLayer = new("Frame", {
+	Name = "EspLayer",
+	Size = UDim2.fromScale(1, 1),
+	BackgroundTransparency = 1,
+}, gui)
+
+-- Всплывающие уведомления
+local function toast(text, kind)
+	local col = (kind == "err" and rgb(235, 90, 100)) or (kind == "ok" and rgb(90, 210, 130)) or THEME.accent2
+	local f = new("Frame", {
+		AnchorPoint = Vector2.new(0.5, 0),
+		Position = UDim2.new(0.5, 0, 0, -70),
+		Size = UDim2.fromOffset(320, 44),
+		BackgroundColor3 = THEME.bg,
+		ZIndex = 200,
+	}, gui)
+	corner(f, 10)
+	stroke(f, col, 1.5, 0.1)
+	new("TextLabel", {
+		Position = UDim2.fromOffset(10, 0),
+		Size = UDim2.new(1, -20, 1, 0),
+		BackgroundTransparency = 1,
+		Text = text,
+		Font = Enum.Font.GothamMedium,
+		TextSize = 12,
+		TextColor3 = THEME.text,
+		TextWrapped = true,
+	}, f)
+	tween(f, 0.55, { Position = UDim2.new(0.5, 0, 0, 14) }, Enum.EasingStyle.Back)
+	task.delay(3.4, function()
+		tween(f, 0.4, { Position = UDim2.new(0.5, 0, 0, -70) }, Enum.EasingStyle.Quint, Enum.EasingDirection.In)
+			.Completed:Connect(function() f:Destroy() end)
+	end)
+end
+
+----------------------------------------------------------------
+-- Состояния функций
+----------------------------------------------------------------
+local Fly = { enabled = false, speed = 60 }
+local State = {
+	walkOn = false, walk = 50,
+	jumpOn = false, jump = 100,
+	infJump = false, noclip = false, god = false,
+	antiAfk = false, particles = true,
+}
+local orig = {}
+
+local flyVel, flyGyro, flyConn
+local keys = {}
+local touchUp, touchDown = false, false
+
+----------------------------------------------------------------
+-- Кнопки ▲ ▼ для телефона (полёт)
+----------------------------------------------------------------
+local flyPad = new("Frame", {
+	Name = "FlyPad",
+	AnchorPoint = Vector2.new(1, 0.5),
+	Position = UDim2.new(1, -20, 0.5, 0),
+	Size = UDim2.fromOffset(56, 120),
+	BackgroundTransparency = 1,
+	Visible = false,
+}, gui)
+local padScale = new("UIScale", { Scale = 0 }, flyPad)
+
+local function padButton(text, y, onChange)
+	local b = new("TextButton", {
+		Position = UDim2.fromOffset(0, y),
+		Size = UDim2.fromOffset(56, 56),
+		BackgroundColor3 = "@bg",
+		BackgroundTransparency = 0.1,
+		Text = text,
+		Font = Enum.Font.GothamBold,
+		TextSize = 20,
+		TextColor3 = "@accent2",
+		AutoButtonColor = false,
+	}, flyPad)
+	roundCorner(b)
+	stroke(b, "@accent", 2, 0.1)
+	connect(b.InputBegan, function(input)
+		if isPress(input) then
+			onChange(true)
+			tween(b, 0.1, { BackgroundColor3 = THEME.accent, BackgroundTransparency = 0 })
+		end
+	end)
+	connect(b.InputEnded, function(input)
+		if isPress(input) then
+			onChange(false)
+			tween(b, 0.25, { BackgroundColor3 = THEME.bg, BackgroundTransparency = 0.1 })
+		end
+	end)
+end
+padButton("▲", 0, function(v) touchUp = v end)
+padButton("▼", 64, function(v) touchDown = v end)
+
+local function showPad(show)
+	if not UIS.TouchEnabled then return end
+	if show then
+		flyPad.Visible = true
+		tween(padScale, 0.4, { Scale = 1 }, Enum.EasingStyle.Back)
+	else
+		touchUp, touchDown = false, false
+		tween(padScale, 0.2, { Scale = 0 }, Enum.EasingStyle.Quint, Enum.EasingDirection.In)
+		task.delay(0.22, function()
+			if not Fly.enabled then flyPad.Visible = false end
+		end)
+	end
+end
+
+----------------------------------------------------------------
+-- FLY
+----------------------------------------------------------------
+local ControlModule
+task.spawn(function()
+	local ok, mod = pcall(function()
+		local ps = LocalPlayer:WaitForChild("PlayerScripts", 5)
+		local pm = ps:WaitForChild("PlayerModule", 5)
+		return require(pm:WaitForChild("ControlModule", 5))
+	end)
+	if ok then ControlModule = mod end
+end)
+
+local function getChar()
+	local char = LocalPlayer.Character
+	return char,
+		char and char:FindFirstChild("HumanoidRootPart"),
+		char and char:FindFirstChildOfClass("Humanoid")
+end
+
+local function respawn()
+	local char, _, hum = getChar()
+	pcall(function() if hum then hum.Health = 0 end end)
+	pcall(function() if char then char:BreakJoints() end end)
+end
+
+local function getMoveDir(humanoid, camCF)
+	if ControlModule then
+		local ok, mv = pcall(ControlModule.GetMoveVector, ControlModule)
+		if ok and typeof(mv) == "Vector3" then
+			return camCF.RightVector * mv.X + camCF.LookVector * -mv.Z
+		end
+	end
+	local md = humanoid.MoveDirection
+	if md.Magnitude < 0.01 then return Vector3.zero end
+	local look, right = camCF.LookVector, camCF.RightVector
+	local flatLook = Vector3.new(look.X, 0, look.Z)
+	flatLook = flatLook.Magnitude > 0.01 and flatLook.Unit or Vector3.new(0, 0, -1)
+	local flatRight = Vector3.new(right.X, 0, right.Z).Unit
+	return look * md:Dot(flatLook) + right * md:Dot(flatRight)
+end
+
+local function getVertical()
+	local up = keys[Enum.KeyCode.Space] or keys[Enum.KeyCode.E] or touchUp
+	local down = keys[Enum.KeyCode.Q] or keys[Enum.KeyCode.LeftControl] or touchDown
+	return (up and 1 or 0) - (down and 1 or 0)
+end
+
+local function cleanupFly()
+	if flyConn then flyConn:Disconnect() flyConn = nil end
+	if flyVel then flyVel:Destroy() flyVel = nil end
+	if flyGyro then flyGyro:Destroy() flyGyro = nil end
+	local _, _, hum = getChar()
+	if hum then hum.PlatformStand = false end
+end
+
+local function startFly()
+	cleanupFly()
+	local _, hrp, hum = getChar()
+	if not hrp or not hum then return end
+
+	flyVel = new("BodyVelocity", {
+		MaxForce = Vector3.new(9e9, 9e9, 9e9),
+		Velocity = Vector3.zero,
+	}, hrp)
+	flyGyro = new("BodyGyro", {
+		MaxTorque = Vector3.new(9e9, 9e9, 9e9),
+		P = 9e4,
+		D = 1e3,
+		CFrame = hrp.CFrame,
+	}, hrp)
+	hum.PlatformStand = true
+
+	flyConn = RunService.RenderStepped:Connect(function(dt)
+		local _, rootPart, humanoid = getChar()
+		local cam = workspace.CurrentCamera
+		if not (rootPart and humanoid and cam and flyVel and flyVel.Parent == rootPart) then return end
+
+		humanoid.PlatformStand = true
+		local camCF = cam.CFrame
+		local target = getMoveDir(humanoid, camCF) + Vector3.new(0, getVertical(), 0)
+		if target.Magnitude > 1 then target = target.Unit end
+
+		flyVel.Velocity = flyVel.Velocity:Lerp(target * Fly.speed, math.clamp(dt * 12, 0, 1))
+
+		local look = camCF.LookVector
+		local flat = Vector3.new(look.X, 0, look.Z)
+		if flat.Magnitude > 0.05 then
+			flyGyro.CFrame = CFrame.lookAt(rootPart.Position, rootPart.Position + flat)
+		end
+	end)
+end
+
+local function setFly(state)
+	Fly.enabled = state
+	if state then startFly() else cleanupFly() end
+	showPad(state)
+end
+
+connect(UIS.InputBegan, function(input, gp)
+	if input.UserInputType == Enum.UserInputType.Keyboard and not gp then
+		keys[input.KeyCode] = true
+	end
+end)
+connect(UIS.InputEnded, function(input)
+	if input.UserInputType == Enum.UserInputType.Keyboard then
+		keys[input.KeyCode] = nil
+	end
+end)
+
+connect(LocalPlayer.CharacterAdded, function(char)
+	if not Fly.enabled then return end
+	char:WaitForChild("HumanoidRootPart", 5)
+	char:WaitForChild("Humanoid", 5)
+	task.wait(0.4)
+	if Fly.enabled then startFly() end
+end)
+
+----------------------------------------------------------------
+-- WalkSpeed, JumpPower, Infinite Jump, Noclip, God Mode
+----------------------------------------------------------------
+local function setWalk(on)
+	State.walkOn = on
+	local _, _, hum = getChar()
+	if not hum then return end
+	if on then
+		orig.walk = hum.WalkSpeed
+	else
+		hum.WalkSpeed = orig.walk or 16
+	end
+end
+
+local function setJump(on)
+	State.jumpOn = on
+	local _, _, hum = getChar()
+	if not hum then return end
+	if on then
+		orig.useJP, orig.jp, orig.jh = hum.UseJumpPower, hum.JumpPower, hum.JumpHeight
+	elseif orig.useJP ~= nil then
+		hum.UseJumpPower = orig.useJP
+		hum.JumpPower = orig.jp
+		hum.JumpHeight = orig.jh
+	end
+end
+
+local noclipTouched = setmetatable({}, { __mode = "k" })
+local function setNoclip(on)
+	State.noclip = on
+	if not on then
+		for part in pairs(noclipTouched) do
+			if part and part.Parent then part.CanCollide = true end
+		end
+		noclipTouched = setmetatable({}, { __mode = "k" })
+	end
+end
+
+local function setGod(on)
+	State.god = on
+	if not on then
+		local char, _, hum = getChar()
+		if hum then
+			pcall(function() hum:SetStateEnabled(Enum.HumanoidStateType.Dead, true) end)
+		end
+		local ff = char and char:FindFirstChild("DeltaFF")
+		if ff then ff:Destroy() end
+	end
+end
+
+connect(RunService.Heartbeat, function()
+	local char, _, hum = getChar()
+	if not hum then return end
+
+	if State.walkOn and hum.WalkSpeed ~= State.walk then
+		hum.WalkSpeed = State.walk
+	end
+	if State.jumpOn then
+		if not hum.UseJumpPower then hum.UseJumpPower = true end
+		if hum.JumpPower ~= State.jump then hum.JumpPower = State.jump end
+	end
+	if State.god then
+		if hum.Health < hum.MaxHealth then hum.Health = hum.MaxHealth end
+		if hum:GetStateEnabled(Enum.HumanoidStateType.Dead) then
+			hum:SetStateEnabled(Enum.HumanoidStateType.Dead, false)
+		end
+		if not char:FindFirstChild("DeltaFF") then
+			local ff = Instance.new("ForceField")
+			ff.Name = "DeltaFF"
+			ff.Visible = false
+			ff.Parent = char
+		end
+	end
+end)
+
+connect(RunService.Stepped, function()
+	if not State.noclip then return end
+	local char = LocalPlayer.Character
+	if not char then return end
+	for _, p in ipairs(char:GetDescendants()) do
+		if p:IsA("BasePart") and p.CanCollide then
+			noclipTouched[p] = true
+			p.CanCollide = false
+		end
+	end
+end)
+
+connect(UIS.JumpRequest, function()
+	if not State.infJump then return end
+	local _, _, hum = getChar()
+	if hum then hum:ChangeState(Enum.HumanoidStateType.Jumping) end
+end)
+
+connect(LocalPlayer.Idled, function()
+	if not State.antiAfk then return end
+	pcall(function()
+		local vu = game:GetService("VirtualUser")
+		vu:CaptureController()
+		vu:ClickButton2(Vector2.new())
+	end)
+end)
+
+----------------------------------------------------------------
+-- VISUALS: ESP Lines + Aimbot
+----------------------------------------------------------------
+local DIST_MAX = 5000 -- на этом значении ползунок дистанции = без ограничения
+
+local ESP = {
+	enabled = false,
+	origin = "Bottom",   -- Bottom / Center / Top
+	target = "Body",     -- Head / Body / Feet
+	color = "Red",
+	thickness = 2,
+	opacity = 0.85,
+	maxDist = DIST_MAX,
+	teamCheck = false,
+	names = false,
+	distance = false,
+	objects = {},
+	wasOn = false,
+}
+
+local ESP_COLORS = {
+	{ name = "White",   color = rgb(255, 255, 255) },
+	{ name = "Red",     color = rgb(255, 70, 70) },
+	{ name = "Gold",    color = rgb(255, 200, 70) },
+	{ name = "Green",   color = rgb(80, 235, 120) },
+	{ name = "Cyan",    color = rgb(70, 225, 255) },
+	{ name = "Blue",    color = rgb(80, 130, 255) },
+	{ name = "Purple",  color = rgb(180, 100, 255) },
+	{ name = "Pink",    color = rgb(255, 110, 190) },
+}
+local ESP_COLOR_MAP = {}
+for _, e in ipairs(ESP_COLORS) do
+	e.seq = ColorSequence.new(e.color)
+	ESP_COLOR_MAP[e.name] = e.color
+end
+table.insert(ESP_COLORS, {
+	name = "Team",
+	seq = ColorSequence.new(rgb(255, 80, 80), rgb(80, 140, 255)),
+})
+table.insert(ESP_COLORS, {
+	name = "Rainbow",
+	seq = ColorSequence.new({
+		ColorSequenceKeypoint.new(0, rgb(255, 80, 80)),
+		ColorSequenceKeypoint.new(0.33, rgb(255, 220, 80)),
+		ColorSequenceKeypoint.new(0.66, rgb(80, 255, 140)),
+		ColorSequenceKeypoint.new(1, rgb(80, 140, 255)),
+	}),
+})
+
+local Aim = {
+	enabled = false,
+	part = "Head",       -- Head / Torso
+	mode = "Always",     -- Always / Hold RMB
+	fov = 150,
+	smooth = 35,
+	teamCheck = true,
+	wallCheck = false,
+	showFov = true,
+	maxDist = DIST_MAX,
+}
+
+local function isEnemy(plr, teamCheck)
+	if not teamCheck then return true end
+	local a, b = LocalPlayer.Team, plr.Team
+	if a == nil or b == nil then return true end
+	return a ~= b
+end
+
+-- Круг FOV для аима
+local fovCircle = new("Frame", {
+	AnchorPoint = Vector2.new(0.5, 0.5),
+	Position = UDim2.fromScale(0.5, 0.5),
+	Size = UDim2.fromOffset(Aim.fov * 2, Aim.fov * 2),
+	BackgroundTransparency = 1,
+	Visible = false,
+}, espLayer)
+roundCorner(fovCircle)
+stroke(fovCircle, "@accent2", 1.5, 0.2)
+
+function ESP.getObject(plr)
+	local o = ESP.objects[plr]
+	if o then return o end
+	o = {
+		line = new("Frame", {
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			BackgroundColor3 = Color3.new(1, 1, 1),
+			BorderSizePixel = 0,
+			Visible = false,
+		}, espLayer),
+		label = new("TextLabel", {
+			AnchorPoint = Vector2.new(0.5, 1),
+			Size = UDim2.fromOffset(140, 14),
+			BackgroundTransparency = 1,
+			Font = Enum.Font.GothamBold,
+			TextSize = 12,
+			TextStrokeTransparency = 0.4,
+			TextStrokeColor3 = Color3.new(0, 0, 0),
+			Visible = false,
+		}, espLayer),
+	}
+	ESP.objects[plr] = o
+	return o
+end
+
+function ESP.hideAll()
+	for _, o in pairs(ESP.objects) do
+		o.line.Visible = false
+		o.label.Visible = false
+	end
+end
+
+connect(Players.PlayerRemoving, function(plr)
+	local o = ESP.objects[plr]
+	if o then
+		o.line:Destroy()
+		o.label:Destroy()
+		ESP.objects[plr] = nil
+	end
+end)
+
+local function targetPosition(char, kind)
+	if kind == "Head" then
+		local h = char:FindFirstChild("Head")
+		return h and h.Position
+	end
+	local r = char:FindFirstChild("HumanoidRootPart")
+	if not r then return nil end
+	if kind == "Feet" then return r.Position - Vector3.new(0, 3, 0) end
+	return r.Position
+end
+
+function ESP.update(cam, t)
+	if not ESP.enabled then
+		if ESP.wasOn then
+			ESP.wasOn = false
+			ESP.hideAll()
+		end
+		return
+	end
+	ESP.wasOn = true
+
+	local vp = cam.ViewportSize
+	local origin
+	if ESP.origin == "Center" then
+		origin = vp / 2
+	elseif ESP.origin == "Top" then
+		origin = Vector2.new(vp.X / 2, 0)
+	else
+		origin = Vector2.new(vp.X / 2, vp.Y)
+	end
+
+	local _, myRoot = getChar()
+	local myPos = myRoot and myRoot.Position or cam.CFrame.Position
+	local idx = 0
+
+	for _, plr in ipairs(Players:GetPlayers()) do
+		if plr ~= LocalPlayer then
+			idx = idx + 1
+			local o = ESP.getObject(plr)
+			local show = false
+			local char = plr.Character
+			local hum = char and char:FindFirstChildOfClass("Humanoid")
+			local pos = (hum and hum.Health > 0) and targetPosition(char, ESP.target) or nil
+
+			if pos and isEnemy(plr, ESP.teamCheck) then
+				local dist = (pos - myPos).Magnitude
+				if ESP.maxDist >= DIST_MAX or dist <= ESP.maxDist then
+					local v = cam:WorldToViewportPoint(pos)
+					if v.Z > 0 then
+						show = true
+						local p2 = Vector2.new(v.X, v.Y)
+						local d = p2 - origin
+
+						-- цвет
+						local col
+						if ESP.color == "Rainbow" then
+							col = Color3.fromHSV((t * 0.25 + idx * 0.07) % 1, 0.85, 1)
+						elseif ESP.color == "Team" then
+							col = plr.Team and plr.TeamColor.Color or Color3.new(1, 1, 1)
+						else
+							col = ESP_COLOR_MAP[ESP.color] or Color3.new(1, 1, 1)
+						end
+
+						local line = o.line
+						line.Size = UDim2.fromOffset(d.Magnitude, ESP.thickness)
+						line.Position = UDim2.fromOffset((origin.X + p2.X) / 2, (origin.Y + p2.Y) / 2)
+						line.Rotation = math.deg(math.atan2(d.Y, d.X))
+						line.BackgroundColor3 = col
+						line.BackgroundTransparency = 1 - ESP.opacity
+
+						-- имя / дистанция
+						local label = o.label
+						local showText = (ESP.names or ESP.distance)
+							and p2.X > 0 and p2.X < vp.X and p2.Y > 0 and p2.Y < vp.Y
+						if showText then
+							local txt = ""
+							if ESP.names then txt = plr.DisplayName end
+							if ESP.distance then
+								txt = txt .. (ESP.names and "  " or "") .. "[" .. math.floor(dist) .. "]"
+							end
+							label.Text = txt
+							label.TextColor3 = col
+							label.Position = UDim2.fromOffset(p2.X, p2.Y - 8)
+						end
+						label.Visible = showText
+					end
+				end
+			end
+
+			o.line.Visible = show
+			if not show then o.label.Visible = false end
+		end
+	end
+end
+
+local aimParams = RaycastParams.new()
+aimParams.FilterType = Enum.RaycastFilterType.Exclude
+
+local function aimPartOf(char)
+	if Aim.part == "Head" then return char:FindFirstChild("Head") end
+	return char:FindFirstChild("HumanoidRootPart")
+		or char:FindFirstChild("UpperTorso")
+		or char:FindFirstChild("Torso")
+end
+
+function Aim.update(cam, dt)
+	fovCircle.Visible = Aim.enabled and Aim.showFov
+	if not Aim.enabled then return end
+	if Aim.mode == "Hold RMB" and not UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton2) then
+		return
+	end
+
+	local center = cam.ViewportSize / 2
+	local camPos = cam.CFrame.Position
+	local bestPart, bestD
+	aimParams.FilterDescendantsInstances = { LocalPlayer.Character }
+
+	for _, plr in ipairs(Players:GetPlayers()) do
+		if plr ~= LocalPlayer and isEnemy(plr, Aim.teamCheck) then
+			local char = plr.Character
+			local hum = char and char:FindFirstChildOfClass("Humanoid")
+			local part = char and aimPartOf(char)
+			if hum and hum.Health > 0 and part then
+				local v = cam:WorldToViewportPoint(part.Position)
+				if v.Z > 0 then
+					local d = (Vector2.new(v.X, v.Y) - center).Magnitude
+					if d <= Aim.fov and (not bestD or d < bestD) then
+						local ok = true
+						if Aim.maxDist < DIST_MAX then
+							ok = (part.Position - camPos).Magnitude <= Aim.maxDist
+						end
+						if ok and Aim.wallCheck then
+							local res = workspace:Raycast(camPos, part.Position - camPos, aimParams)
+							ok = (res == nil) or res.Instance:IsDescendantOf(char)
+						end
+						if ok then
+							bestPart, bestD = part, d
+						end
+					end
+				end
+			end
+		end
+	end
+
+	if bestPart then
+		local cf = cam.CFrame
+		local goal = CFrame.lookAt(cf.Position, bestPart.Position)
+		local s = math.clamp(Aim.smooth / 100, 0, 0.97)
+		local alpha = 1 - s ^ (dt * 60)
+		cam.CFrame = cf:Lerp(goal, alpha)
+	end
+end
+
+-- Выполняется после обновления камеры, чтобы аим не перебивался
+RunService:BindToRenderStep("InstallerScripts_Main", Enum.RenderPriority.Camera.Value + 1, function(dt)
+	local cam = workspace.CurrentCamera
+	if not cam then return end
+	ESP.update(cam, os.clock())
+	Aim.update(cam, dt)
+end)
+
+----------------------------------------------------------------
+-- FE FUNCTION: Copy Avatar
+-- Roblox не даёт клиенту менять внешность для других игроков напрямую.
+-- Поэтому используется официальный запрос сохранения аватара: ты сам
+-- подтверждаешь окно Roblox, аватар сохраняется на аккаунте и после
+-- респавна его видят все. Наденутся только вещи, которые есть у тебя.
+----------------------------------------------------------------
+local Avatar = { active = false, autoRespawn = true }
+
+local function promptSaveAvatar(desc, rig)
+	local AES = game:GetService("AvatarEditorService")
+	local done, result = false, nil
+	local conn = AES.PromptSaveAvatarCompleted:Connect(function(r)
+		result = r
+		done = true
+	end)
+	local ok, err = pcall(function() AES:PromptSaveAvatar(desc, rig) end)
+	if not ok then
+		conn:Disconnect()
+		return nil, tostring(err)
+	end
+	local t0 = os.clock()
+	while not done and os.clock() - t0 < 120 do task.wait(0.1) end
+	conn:Disconnect()
+	return result
+end
+
+-- status(text, kind) - сообщение пользователю, cancelled() - true, если окно закрыли
+function Avatar.copy(username, status, cancelled)
+	username = string.match(username or "", "^%s*(.-)%s*$")
+	if username == "" then
+		status("Введите ник", "err")
+		return false
+	end
+
+	status("Ищу игрока...", "info")
+	local okId, userId = pcall(function() return Players:GetUserIdFromNameAsync(username) end)
+	if not okId or type(userId) ~= "number" then
+		status("Игрок с таким ником не найден", "err")
+		return false
+	end
+
+	status("Загружаю аватар...", "info")
+	local okD, desc = pcall(function() return Players:GetHumanoidDescriptionFromUserId(userId) end)
+	if not okD or not desc then
+		status("Не удалось загрузить аватар", "err")
+		return false
+	end
+
+	-- запоминаем свой аватар, чтобы потом можно было вернуть
+	if not Avatar.origDesc then
+		local okO, d = pcall(function() return Players:GetHumanoidDescriptionFromUserId(LocalPlayer.UserId) end)
+		if okO then Avatar.origDesc = d end
+		local _, _, hum = getChar()
+		Avatar.origRig = hum and hum.RigType or Enum.HumanoidRigType.R15
+	end
+
+	local rig = Enum.HumanoidRigType.R15
+	local okI, info = pcall(function() return Players:GetCharacterAppearanceInfoAsync(userId) end)
+	if okI and type(info) == "table" and info.playerAvatarType == "R6" then
+		rig = Enum.HumanoidRigType.R6
+	end
+
+	status("Подтвердите окно Roblox...", "info")
+	local result, err = promptSaveAvatar(desc, rig)
+	if cancelled and cancelled() then return false end
+
+	if result == Enum.AvatarPromptResult.Success then
+		Avatar.active = true
+		status("Готово! Аватар сохранён.", "ok")
+		if Avatar.autoRespawn then
+			task.delay(1.4, respawn)
+		else
+			toast("Аватар сохранён. Сделай респавн, чтобы его увидели все.", "ok")
+		end
+		return true
+	end
+
+	-- не вышло: хотя бы локальный предпросмотр
+	local _, _, hum = getChar()
+	if hum then pcall(function() hum:ApplyDescription(desc) end) end
+	if err then
+		status("Roblox отклонил запрос. Применено только у тебя.", "err")
+	else
+		status("Не сохранено (нужны вещи на аккаунте). Видно только тебе.", "err")
+	end
+	return false
+end
+
+function Avatar.restore()
+	if not Avatar.origDesc then
+		toast("Нечего восстанавливать", "err")
+		return
+	end
+	task.spawn(function()
+		toast("Подтверди возврат аватара в окне Roblox", "info")
+		local result = promptSaveAvatar(Avatar.origDesc, Avatar.origRig or Enum.HumanoidRigType.R15)
+		if result == Enum.AvatarPromptResult.Success then
+			Avatar.active = false
+			toast("Твой аватар возвращён", "ok")
+			if Avatar.autoRespawn then task.delay(1.2, respawn) end
+		else
+			toast("Не удалось вернуть аватар", "err")
+		end
+	end)
+end
+
+----------------------------------------------------------------
+-- Окно ввода ника
+----------------------------------------------------------------
+local Dialog = { busy = false, token = 0 }
+
+function Dialog.build()
+	if Dialog.overlay then return end
+	local overlay = new("TextButton", {
+		Name = "DialogOverlay",
+		Size = UDim2.fromScale(1, 1),
+		BackgroundColor3 = Color3.new(0, 0, 0),
+		BackgroundTransparency = 1,
+		Text = "",
+		AutoButtonColor = false,
+		Visible = false,
+		ZIndex = 100,
+	}, gui)
+	local holder = new("Frame", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.42),
+		Size = UDim2.fromOffset(330, 204),
+		BackgroundTransparency = 1,
+	}, overlay)
+	corner(holder, 14)
+	local hStroke = stroke(holder, Color3.new(1, 1, 1), 2, 1)
+	accentGradient(hStroke, 0, "loop")
+	local hScale = new("UIScale", { Scale = 0.85 }, holder)
+	local card = new("CanvasGroup", {
+		Size = UDim2.fromScale(1, 1),
+		BackgroundColor3 = "@bg",
+		GroupTransparency = 1,
+	}, holder)
+	corner(card, 14)
+
+	new("TextLabel", {
+		Position = UDim2.fromOffset(18, 14),
+		Size = UDim2.new(1, -36, 0, 22),
+		BackgroundTransparency = 1,
+		Text = "Copy Avatar",
+		Font = Enum.Font.GothamBold,
+		TextSize = 17,
+		TextColor3 = "@accent2",
+		TextXAlignment = Enum.TextXAlignment.Left,
+	}, card)
+	new("TextLabel", {
+		Position = UDim2.fromOffset(18, 40),
+		Size = UDim2.new(1, -36, 0, 30),
+		BackgroundTransparency = 1,
+		Text = "Введите ник Roblox. Игрок может быть не на сервере.",
+		Font = Enum.Font.Gotham,
+		TextSize = 12,
+		TextColor3 = "@sub",
+		TextWrapped = true,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextYAlignment = Enum.TextYAlignment.Top,
+	}, card)
+
+	local box = new("TextBox", {
+		Position = UDim2.fromOffset(18, 76),
+		Size = UDim2.new(1, -36, 0, 38),
+		BackgroundColor3 = "@element",
+		Text = "",
+		PlaceholderText = "Roblox username",
+		PlaceholderColor3 = "@sub",
+		TextColor3 = "@text",
+		Font = Enum.Font.Gotham,
+		TextSize = 15,
+		ClearTextOnFocus = false,
+		TextXAlignment = Enum.TextXAlignment.Left,
+	}, card)
+	corner(box, 8)
+	new("UIPadding", { PaddingLeft = UDim.new(0, 12), PaddingRight = UDim.new(0, 12) }, box)
+	local boxStroke = stroke(box, "@stroke", 1.5, 0)
+	connect(box.Focused, function() tween(boxStroke, 0.25, { Color = THEME.accent2 }) end)
+
+	local status = new("TextLabel", {
+		Position = UDim2.fromOffset(18, 120),
+		Size = UDim2.new(1, -36, 0, 18),
+		BackgroundTransparency = 1,
+		Text = "",
+		Font = Enum.Font.GothamMedium,
+		TextSize = 12,
+		TextColor3 = "@sub",
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+	}, card)
+
+	local function mkButton(text, pos, bgKey, textKey)
+		local b = new("TextButton", {
+			Position = pos,
+			Size = UDim2.new(0.5, -24, 0, 36),
+			BackgroundColor3 = bgKey,
+			Text = text,
+			Font = Enum.Font.GothamBold,
+			TextSize = 14,
+			TextColor3 = textKey,
+			AutoButtonColor = false,
+		}, card)
+		corner(b, 8)
+		connect(b.MouseEnter, function() tween(b, 0.15, { BackgroundTransparency = 0.2 }) end)
+		connect(b.MouseLeave, function() tween(b, 0.2, { BackgroundTransparency = 0 }) end)
+		return b
+	end
+	local cancelBtn = mkButton("Cancel", UDim2.fromOffset(18, 152), "@element", "@sub")
+	local copyBtn = mkButton("Copy", UDim2.new(0.5, 6, 0, 152), "@accent", Color3.new(1, 1, 1))
+
+	Dialog.overlay, Dialog.holder, Dialog.hScale = overlay, holder, hScale
+	Dialog.card, Dialog.hStroke, Dialog.box, Dialog.status = card, hStroke, box, status
+
+	function Dialog.setStatus(text, kind)
+		status.Text = text
+		local col = (kind == "err" and rgb(235, 90, 100)) or (kind == "ok" and rgb(90, 210, 130)) or THEME.accent2
+		tween(status, 0.2, { TextColor3 = col })
+	end
+
+	local function submit()
+		if Dialog.busy then return end
+		Dialog.busy = true
+		Dialog.token = Dialog.token + 1
+		local my = Dialog.token
+		task.spawn(function()
+			local ok = Avatar.copy(box.Text, function(txt, kind)
+				if Dialog.token == my then Dialog.setStatus(txt, kind) end
+			end, function() return Dialog.token ~= my end)
+			if Dialog.token ~= my then return end
+			Dialog.busy = false
+			if ok then
+				task.wait(1.2)
+				if Dialog.token == my then
+					Dialog.close()
+					if Dialog.onDone then Dialog.onDone(true) end
+				end
+			end
+		end)
+	end
+
+	connect(copyBtn.MouseButton1Click, submit)
+	connect(box.FocusLost, function(enter) if enter then submit() end end)
+	connect(cancelBtn.MouseButton1Click, function()
+		Dialog.token = Dialog.token + 1
+		Dialog.busy = false
+		Dialog.close()
+		if Dialog.onDone then Dialog.onDone(false) end
+	end)
+end
+
+function Dialog.open(onDone)
+	Dialog.build()
+	Dialog.onDone = onDone
+	Dialog.busy = false
+	Dialog.token = Dialog.token + 1
+	Dialog.setStatus("", "info")
+	local cam = workspace.CurrentCamera
+	local vp = cam and cam.ViewportSize or Vector2.new(1280, 720)
+	local fit = math.clamp(math.min(vp.X / 360, vp.Y / 300), 0.6, 1)
+
+	Dialog.overlay.Visible = true
+	Dialog.hScale.Scale = 0.85 * fit
+	tween(Dialog.overlay, 0.3, { BackgroundTransparency = 0.5 })
+	tween(Dialog.hScale, 0.5, { Scale = fit }, Enum.EasingStyle.Back)
+	tween(Dialog.card, 0.3, { GroupTransparency = 0 })
+	tween(Dialog.hStroke, 0.3, { Transparency = 0 })
+	task.delay(0.4, function()
+		if Dialog.overlay.Visible then Dialog.box:CaptureFocus() end
+	end)
+end
+
+function Dialog.close()
+	if not Dialog.overlay then return end
+	tween(Dialog.overlay, 0.3, { BackgroundTransparency = 1 })
+	tween(Dialog.hScale, 0.3, { Scale = 0.85 }, Enum.EasingStyle.Quint, Enum.EasingDirection.In)
+	tween(Dialog.card, 0.25, { GroupTransparency = 1 })
+	tween(Dialog.hStroke, 0.25, { Transparency = 1 })
+	task.delay(0.35, function()
+		if Dialog.token and Dialog.overlay then Dialog.overlay.Visible = false end
+	end)
+end
+
+----------------------------------------------------------------
+-- Размер меню (настраивается в Settings)
+----------------------------------------------------------------
+local menuW, menuH, menuScale = 540, 320, 1
+
+local function currentScale()
+	local cam = workspace.CurrentCamera
+	local vp = cam and cam.ViewportSize or Vector2.new(1280, 720)
+	local maxFit = math.min(vp.X / (menuW + 24), vp.Y / (menuH + 24))
+	return math.clamp(math.min(menuScale, maxFit), 0.35, 2)
+end
+
+----------------------------------------------------------------
+-- Окно
+----------------------------------------------------------------
+local SIDE_W, HEAD_H = 144, 50
+
+local root = new("Frame", {
+	Name = "Root",
+	AnchorPoint = Vector2.new(0.5, 0.5),
+	Position = UDim2.fromScale(0.5, 0.5),
+	Size = UDim2.fromOffset(menuW, menuH),
+	BackgroundTransparency = 1,
+	Visible = false,
+}, gui)
+corner(root, 14)
+local rootStroke = stroke(root, Color3.new(1, 1, 1), 2, 1)
+local borderGrad = accentGradient(rootStroke, 0, "loop") -- вращающаяся рамка
+local uiScale = new("UIScale", { Scale = 0.05 }, root)
+
+local window = new("CanvasGroup", {
+	Size = UDim2.fromScale(1, 1),
+	BackgroundColor3 = "@bg",
+	GroupTransparency = 1,
+}, root)
+corner(window, 14)
+
+-- Слой с летающими искрами (позади всего)
+local fx = new("Frame", {
+	Size = UDim2.fromScale(1, 1),
+	BackgroundTransparency = 1,
+}, window)
+local particles = {}
+for i = 1, 22 do
+	local sz = math.random(2, 5)
+	local f = new("Frame", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Size = UDim2.fromOffset(sz, sz),
+		BackgroundColor3 = "@accent2",
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+	}, fx)
+	roundCorner(f)
+	particles[i] = {
+		f = f,
+		x = math.random(),
+		prog = math.random(),
+		speed = 0.05 + math.random() * 0.09,
+		phase = math.random() * 6.28,
+		amp = 0.01 + math.random() * 0.02,
+	}
+end
+
+-- Сайдбар
+local sidebar = new("Frame", {
+	Size = UDim2.new(0, SIDE_W, 1, 0),
+	BackgroundColor3 = "@side",
+	BackgroundTransparency = 0.12,
+	BorderSizePixel = 0,
+}, window)
+
+local watermark = new("TextLabel", {
+	AnchorPoint = Vector2.new(0.5, 1),
+	Position = UDim2.new(0.5, 0, 1, 22),
+	Size = UDim2.fromOffset(110, 110),
+	BackgroundTransparency = 1,
+	Text = "龍",
+	Font = Enum.Font.GothamBold,
+	TextSize = 96,
+	TextColor3 = "@accent",
+	TextTransparency = 0.88,
+}, sidebar)
+
+new("Frame", {
+	AnchorPoint = Vector2.new(1, 0),
+	Position = UDim2.fromScale(1, 0),
+	Size = UDim2.new(0, 1, 1, 0),
+	BackgroundColor3 = "@stroke",
+	BorderSizePixel = 0,
+}, sidebar)
+
+local titleArea = new("Frame", {
+	Size = UDim2.new(1, 0, 0, 58),
+	BackgroundTransparency = 1,
+}, sidebar)
+local title = new("TextLabel", {
+	Position = UDim2.new(0, 14, 0, 11),
+	Size = UDim2.new(1, -20, 0, 22),
+	BackgroundTransparency = 1,
+	Text = "installerScripts",
+	Font = Enum.Font.GothamBold,
+	TextScaled = true,
+	TextColor3 = Color3.new(1, 1, 1),
+	TextXAlignment = Enum.TextXAlignment.Left,
+}, titleArea)
+new("UITextSizeConstraint", { MaxTextSize = 17, MinTextSize = 8 }, title)
+local titleGrad = accentGradient(title, 0, "shine")
+new("TextLabel", {
+	Position = UDim2.new(0, 14, 0, 34),
+	Size = UDim2.new(1, -20, 0, 14),
+	BackgroundTransparency = 1,
+	Text = "dragon edition  v2.1",
+	Font = Enum.Font.Gotham,
+	TextSize = 11,
+	TextColor3 = "@sub",
+	TextXAlignment = Enum.TextXAlignment.Left,
+}, titleArea)
+
+local tabHolder = new("Frame", {
+	Position = UDim2.new(0, 0, 0, 68),
+	Size = UDim2.new(1, 0, 1, -112),
+	BackgroundTransparency = 1,
+}, sidebar)
+
+new("TextLabel", {
+	AnchorPoint = Vector2.new(0, 1),
+	Position = UDim2.new(0, 16, 1, -12),
+	Size = UDim2.new(1, -24, 0, 16),
+	BackgroundTransparency = 1,
+	Text = LocalPlayer.DisplayName,
+	Font = Enum.Font.Gotham,
+	TextSize = 12,
+	TextColor3 = "@sub",
+	TextXAlignment = Enum.TextXAlignment.Left,
+	TextTruncate = Enum.TextTruncate.AtEnd,
+}, sidebar)
+
+-- Индикатор выбранной вкладки (скользит и «дышит»)
+local indicator = new("Frame", {
+	Position = UDim2.new(0, 8, 0, 0),
+	Size = UDim2.new(1, -16, 0, 32),
+	BackgroundColor3 = "@accent",
+	BackgroundTransparency = 0.8,
+	BorderSizePixel = 0,
+}, tabHolder)
+corner(indicator, 8)
+local bar = new("Frame", {
+	AnchorPoint = Vector2.new(0, 0.5),
+	Position = UDim2.new(0, 4, 0.5, 0),
+	Size = UDim2.fromOffset(3, 16),
+	BackgroundColor3 = "@accent2",
+	BorderSizePixel = 0,
+}, indicator)
+corner(bar, 2)
+
+-- Шапка
+local header = new("Frame", {
+	Position = UDim2.new(0, SIDE_W, 0, 0),
+	Size = UDim2.new(1, -SIDE_W, 0, HEAD_H),
+	BackgroundTransparency = 1,
+}, window)
+local dragArea = new("Frame", {
+	Size = UDim2.new(1, -100, 1, 0),
+	BackgroundTransparency = 1,
+}, header)
+local headerTitle = new("TextLabel", {
+	Position = UDim2.new(0, 18, 0, 0),
+	Size = UDim2.new(1, -18, 1, 0),
+	BackgroundTransparency = 1,
+	Text = "",
+	Font = Enum.Font.GothamBold,
+	TextSize = 16,
+	TextColor3 = "@text",
+	TextXAlignment = Enum.TextXAlignment.Left,
+}, dragArea)
+do
+	local line = new("Frame", {
+		AnchorPoint = Vector2.new(0.5, 1),
+		Position = UDim2.new(0.5, 0, 1, 0),
+		Size = UDim2.new(1, -36, 0, 1),
+		BackgroundColor3 = Color3.new(1, 1, 1),
+		BorderSizePixel = 0,
+	}, header)
+	local g = accentGradient(line, 0)
+	g.Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.1),
+		NumberSequenceKeypoint.new(1, 1),
+	})
+end
+
+local function iconButton(text, offsetX, hover)
+	local b = new("TextButton", {
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.new(1, offsetX, 0.5, 0),
+		Size = UDim2.fromOffset(28, 28),
+		BackgroundColor3 = "@element",
+		Text = text,
+		Font = Enum.Font.GothamBold,
+		TextSize = 16,
+		TextColor3 = "@sub",
+		AutoButtonColor = false,
+	}, header)
+	corner(b, 8)
+	connect(b.MouseEnter, function()
+		local c = (type(hover) == "string") and THEME[hover] or hover
+		tween(b, 0.15, { BackgroundColor3 = c, TextColor3 = THEME.text })
+	end)
+	connect(b.MouseLeave, function()
+		tween(b, 0.15, { BackgroundColor3 = THEME.element, TextColor3 = THEME.sub })
+	end)
+	return b
+end
+local hideBtn = iconButton("-", -50, "stroke")
+local closeBtn = iconButton("×", -14, rgb(200, 60, 80))
+
+local content = new("Frame", {
+	Position = UDim2.new(0, SIDE_W, 0, HEAD_H),
+	Size = UDim2.new(1, -SIDE_W, 1, -HEAD_H),
+	BackgroundTransparency = 1,
+	ClipsDescendants = true,
+}, window)
+
+----------------------------------------------------------------
+-- Жемчужина и два дракона (кнопка меню)
+----------------------------------------------------------------
+local FAB = 96
+local FAB_C = FAB / 2
+local DRAGON_N = 22
+local ORBIT_RX, ORBIT_RY = 41, 17
+local ANG_STEP = 0.082
+
+local fab = new("Frame", {
+	Name = "Pearl",
+	AnchorPoint = Vector2.new(0.5, 0.5),
+	Position = UDim2.new(0, 60, 0.5, 0),
+	Size = UDim2.fromOffset(FAB, FAB),
+	BackgroundTransparency = 1,
+	ZIndex = 5,
+}, gui)
+local fabScale = new("UIScale", { Scale = 0 }, fab)
+
+local halo = new("Frame", {
+	AnchorPoint = Vector2.new(0.5, 0.5),
+	Position = UDim2.fromScale(0.5, 0.5),
+	Size = UDim2.fromOffset(50, 50),
+	BackgroundTransparency = 1,
+	ZIndex = 1,
+}, fab)
+roundCorner(halo)
+local haloStroke = stroke(halo, "@accent2", 2, 0.5)
+
+-- Мерцающие искорки вокруг
+local sparkles = {}
+for i = 1, 6 do
+	local ang = (i / 6) * math.pi * 2 + 0.5
+	sparkles[i] = {
+		f = new("Frame", {
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Position = UDim2.fromOffset(FAB_C + math.cos(ang) * 45, FAB_C + math.sin(ang) * 42),
+			Size = UDim2.fromOffset(4, 4),
+			Rotation = 45,
+			BackgroundColor3 = "@accent2",
+			BorderSizePixel = 0,
+			ZIndex = 2,
+		}, fab),
+		ph = i * 1.3,
+	}
+end
+
+local pearl = new("Frame", {
+	AnchorPoint = Vector2.new(0.5, 0.5),
+	Position = UDim2.fromScale(0.5, 0.5),
+	Size = UDim2.fromOffset(44, 44),
+	BackgroundColor3 = Color3.new(1, 1, 1),
+	BorderSizePixel = 0,
+	ZIndex = 5,
+}, fab)
+roundCorner(pearl)
+stroke(pearl, "@accent2", 2, 0)
+local pearlGrad = accentGradient(pearl, 45)
+local pearlScale = new("UIScale", {}, pearl)
+new("TextLabel", {
+	Size = UDim2.fromScale(1, 1),
+	BackgroundTransparency = 1,
+	Text = "龍",
+	Font = Enum.Font.GothamBold,
+	TextSize = 23,
+	TextColor3 = rgb(255, 242, 205),
+	ZIndex = 6,
+}, pearl)
+local gloss = new("Frame", {
+	Position = UDim2.fromScale(0.16, 0.1),
+	Size = UDim2.fromOffset(16, 8),
+	Rotation = -32,
+	BackgroundColor3 = Color3.new(1, 1, 1),
+	BackgroundTransparency = 0.7,
+	BorderSizePixel = 0,
+	ZIndex = 7,
+}, pearl)
+roundCorner(gloss)
+
+-- Деталь с точкой вращения в начале (AnchorPoint по X), дочерние детали вращаются вместе с ней
+local function limb(parent, pos, len, thick, rot, color, anchorX)
+	local f = new("Frame", {
+		AnchorPoint = Vector2.new(anchorX or 0, 0.5),
+		Position = pos,
+		Size = UDim2.fromOffset(len, thick),
+		Rotation = rot,
+		BackgroundColor3 = color,
+		BorderSizePixel = 0,
+	}, parent)
+	corner(f, math.max(1, thick / 2))
+	return f
+end
+
+local function newDragon(colorKey, phase, tilt)
+	local d = { colorKey = colorKey, phase = phase, tilt = tilt, segs = {}, spikes = {}, pts = {}, plume = {}, whisk = {} }
+	local pale = rgb(255, 238, 190)
+
+	-- тело: от хвоста к голове (голова рисуется поверх)
+	for i = DRAGON_N, 1, -1 do
+		local seg = new("Frame", {
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			BorderSizePixel = 0,
+		}, fab)
+		roundCorner(seg)
+		stroke(seg, Color3.new(0, 0, 0), 1, 0.5)
+		local belly = new("Frame", {
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Position = UDim2.fromScale(0.5, 0.5),
+			Size = UDim2.fromScale(0.45, 0.45),
+			BackgroundColor3 = rgb(255, 232, 176),
+			BackgroundTransparency = 0.4,
+			BorderSizePixel = 0,
+		}, seg)
+		roundCorner(belly)
+		d.segs[i] = seg
+		-- спинные шипы
+		if i % 2 == 1 and i <= DRAGON_N - 3 then
+			d.spikes[i] = limb(seg, UDim2.fromScale(0.5, 0.5), 6, 2, 0, pale, -0.55)
+		end
+	end
+
+	-- веер на кончике хвоста
+	local tail = d.segs[DRAGON_N]
+	for k = 1, 3 do
+		d.plume[k] = limb(
+			tail, UDim2.fromScale(0.5, 0.5),
+			(k == 1) and 11 or 8, (k == 1) and 2.2 or 1.6, 0, pale
+		)
+	end
+
+	-- голова: 18x12, "перёд" смотрит в сторону Rotation = 0
+	local head = new("Frame", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Size = UDim2.fromOffset(18, 12),
+		BorderSizePixel = 0,
+	}, fab)
+	corner(head, 6)
+	d.head = head
+	d.headScale = new("UIScale", {}, head)
+
+	d.snout = new("Frame", {
+		Position = UDim2.fromOffset(12, 3),
+		Size = UDim2.fromOffset(9, 7),
+		BorderSizePixel = 0,
+	}, head)
+	corner(d.snout, 3)
+	d.jaw = limb(head, UDim2.fromOffset(11, 10.5), 10, 3.2, 8, Color3.new(1, 1, 1))
+	new("Frame", {
+		Position = UDim2.fromOffset(18, 4.2), Size = UDim2.fromOffset(1.8, 1.8),
+		BackgroundColor3 = rgb(40, 15, 15), BorderSizePixel = 0,
+	}, head)
+
+	-- глаз и бровь
+	local eye = new("Frame", {
+		Position = UDim2.fromOffset(7, 2.2), Size = UDim2.fromOffset(4.6, 4.6),
+		BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0,
+	}, head)
+	roundCorner(eye)
+	local pupil = new("Frame", {
+		AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.62, 0.5),
+		Size = UDim2.fromScale(0.5, 0.5), BackgroundColor3 = rgb(25, 8, 8), BorderSizePixel = 0,
+	}, eye)
+	roundCorner(pupil)
+	d.brow = limb(head, UDim2.fromOffset(5.5, 1.8), 6.5, 1.6, 18, Color3.new(0, 0, 0))
+
+	-- рога (две секции, изгиб)
+	local topHorn = limb(head, UDim2.fromOffset(4, 1.5), 9, 2.6, 205, pale)
+	limb(topHorn, UDim2.new(1, 0, 0.5, 0), 7, 1.9, 28, pale)
+	local botHorn = limb(head, UDim2.fromOffset(4, 10.5), 9, 2.6, 155, pale)
+	limb(botHorn, UDim2.new(1, 0, 0.5, 0), 7, 1.9, -28, pale)
+
+	-- усы (три секции, колышутся)
+	for side = 1, 2 do
+		local sgn = (side == 1) and 1 or -1
+		local p1 = limb(head, UDim2.fromOffset(17, side == 1 and 3.2 or 8.8), 9, 1.5, -28 * sgn, pale)
+		local p2 = limb(p1, UDim2.new(1, 0, 0.5, 0), 8, 1.2, -10 * sgn, pale)
+		local p3 = limb(p2, UDim2.new(1, 0, 0.5, 0), 7, 1, 18 * sgn, pale)
+		d.whisk[side] = { p1, p2, p3 }
+	end
+	return d
+end
+
+local function colorDragon(d)
+	local main = THEME[d.colorKey]
+	local dark = main:Lerp(Color3.new(0, 0, 0), 0.55)
+	for i, seg in ipairs(d.segs) do
+		local t = (i - 1) / (DRAGON_N - 1)
+		local c = main:Lerp(dark, t * 0.75)
+		if i % 2 == 0 then c = c:Lerp(Color3.new(1, 1, 1), 0.1) end
+		seg.BackgroundColor3 = c
+	end
+	d.head.BackgroundColor3 = main:Lerp(Color3.new(1, 1, 1), 0.12)
+	d.snout.BackgroundColor3 = main:Lerp(Color3.new(1, 1, 1), 0.22)
+	d.jaw.BackgroundColor3 = main:Lerp(dark, 0.35)
+end
+
+local dragons = {
+	newDragon("accent2", 0, 0.45),
+	newDragon("accent", math.pi, -0.45),
+}
+for _, d in ipairs(dragons) do
+	colorDragon(d)
+	table.insert(refreshers, function() colorDragon(d) end)
+end
+
+-- Точка на наклонной эллиптической орбите + "глубина" (спереди / сзади жемчужины)
+local function orbitPoint(d, a, wob)
+	local x = math.cos(a) * (ORBIT_RX + wob)
+	local y = math.sin(a) * (ORBIT_RY + wob * 0.45)
+	local c, s = math.cos(d.tilt), math.sin(d.tilt)
+	return FAB_C + x * c - y * s, FAB_C + x * s + y * c, math.sin(a)
+end
+
+-- спереди жемчужины (ZIndex 6..18) или за ней (ZIndex 2..4)
+local function depthZ(depth)
+	if depth >= 0 then
+		return 6 + math.floor(depth * 12)
+	end
+	return 2 + math.floor((depth + 1) * 2.99)
+end
+
+local function setZ(frame, z)
+	if frame.ZIndex ~= z then frame.ZIndex = z end
+end
+
+local function updateDragon(d, clock)
+	local theta = clock + d.phase + math.sin(clock * 0.55 + d.phase) * 0.3
+	local pts = d.pts
+	for i = 0, DRAGON_N do
+		local a = theta - i * ANG_STEP
+		local wob = math.sin(clock * 2.6 + i * 0.5 + d.phase) * 2.4
+		local x, y, depth = orbitPoint(d, a, wob)
+		local p = pts[i]
+		if not p then
+			p = {}
+			pts[i] = p
+		end
+		p[1], p[2], p[3] = x, y, depth
+	end
+
+	-- тело
+	for i = 1, DRAGON_N do
+		local p = pts[i]
+		local seg = d.segs[i]
+		local tt = (i - 1) / (DRAGON_N - 1)
+		local size = (3 + 8.5 * (1 - tt) ^ 0.85) * (1 + 0.28 * p[3])
+		seg.Size = UDim2.fromOffset(size, size)
+		seg.Position = UDim2.fromOffset(p[1], p[2])
+		setZ(seg, depthZ(p[3]))
+		local sp = d.spikes[i]
+		if sp then
+			sp.Rotation = math.deg(math.atan2(p[2] - FAB_C, p[1] - FAB_C))
+		end
+	end
+
+	-- хвостовой веер
+	local last, prev = pts[DRAGON_N], pts[DRAGON_N - 1]
+	local tailAng = math.deg(math.atan2(last[2] - prev[2], last[1] - prev[1]))
+	local fan = { 0, 32, -32 }
+	for k = 1, 3 do
+		d.plume[k].Rotation = tailAng + fan[k] + math.sin(clock * 5 + k) * 6
+	end
+
+	-- голова
+	local h = pts[0]
+	local nx, ny = orbitPoint(d, theta + 0.04, math.sin(clock * 2.6 + d.phase) * 2.4)
+	d.head.Position = UDim2.fromOffset(h[1], h[2])
+	d.head.Rotation = math.deg(math.atan2(ny - h[2], nx - h[1]))
+	d.headScale.Scale = 1 + 0.28 * h[3]
+	setZ(d.head, depthZ(h[3]))
+	d.jaw.Rotation = 6 + math.sin(clock * 3.2 + d.phase) * 7
+	for side = 1, 2 do
+		local w = d.whisk[side]
+		local sgn = (side == 1) and 1 or -1
+		w[2].Rotation = (-10 + math.sin(clock * 4 + side) * 14) * sgn
+		w[3].Rotation = (18 + math.sin(clock * 4 + side + 1) * 16) * sgn
+	end
+end
+
+local fabHit = new("TextButton", {
+	Size = UDim2.fromScale(1, 1),
+	BackgroundTransparency = 1,
+	Text = "",
+	ZIndex = 60,
+}, fab)
+
+local function fabCenter()
+	local p, s = fab.AbsolutePosition, fab.AbsoluteSize
+	return UDim2.fromOffset(p.X + s.X / 2, p.Y + s.Y / 2)
+end
+
+-- Расходящиеся кольца при открытии / закрытии
+local function burst()
+	for i = 1, 2 do
+		task.delay((i - 1) * 0.14, function()
+			if not fab.Parent then return end
+			local ring = new("Frame", {
+				AnchorPoint = Vector2.new(0.5, 0.5),
+				Position = UDim2.fromScale(0.5, 0.5),
+				Size = UDim2.fromOffset(46, 46),
+				BackgroundTransparency = 1,
+				ZIndex = 2,
+			}, fab)
+			roundCorner(ring)
+			local st = stroke(ring, THEME.accent2, 2.5, 0.1)
+			tween(ring, 0.8, { Size = UDim2.fromOffset(160, 160) })
+			tween(st, 0.8, { Transparency = 1 }).Completed:Connect(function()
+				ring:Destroy()
+			end)
+		end)
+	end
+end
+
+----------------------------------------------------------------
+-- Вкладки: состояние и анимации
+----------------------------------------------------------------
+local tabs, currentTab = {}, nil
+
+local function popRows(tab)
+	for i, sc in ipairs(tab.rowScales) do
+		sc.Scale = 0.88
+		task.delay(0.05 * i, function()
+			if sc.Parent then tween(sc, 0.45, { Scale = 1 }, Enum.EasingStyle.Back) end
+		end)
+	end
+end
+
+local function refreshTabs()
+	for _, t in ipairs(tabs) do
+		local on = (t == currentTab)
+		tween(t.btn, 0.25, { TextColor3 = on and THEME.text or THEME.sub })
+		tween(t.pad, 0.3, { PaddingLeft = UDim.new(0, on and 22 or 16) }, Enum.EasingStyle.Back)
+	end
+end
+table.insert(refreshers, refreshTabs)
+
+local function selectTab(tab)
+	if currentTab == tab then return end
+	if currentTab then
+		local old = currentTab
+		tween(old.page, 0.15, { GroupTransparency = 1 })
+		task.delay(0.16, function()
+			if currentTab ~= old then old.page.Visible = false end
+		end)
+	end
+	currentTab = tab
+	headerTitle.Text = tab.name
+
+	tab.page.Visible = true
+	tab.page.GroupTransparency = 1
+	tab.page.Position = UDim2.new(0, 0, 0, 16)
+	tween(tab.page, 0.4, { GroupTransparency = 0, Position = UDim2.new(0, 0, 0, 0) })
+
+	tween(indicator, 0.4, { Position = UDim2.new(0, 8, 0, tab.y) }, Enum.EasingStyle.Back)
+	refreshTabs()
+	popRows(tab)
+end
+
+----------------------------------------------------------------
+-- Открытие / закрытие меню (влетает в жемчужину и вылетает из неё)
+----------------------------------------------------------------
+local menuVisible = false
+local menuPos = UDim2.fromScale(0.5, 0.5)
+
+local function setMenuVisible(v)
+	menuVisible = v
+	burst()
+	if v then
+		if not root.Visible then
+			root.Position = fabCenter()
+			uiScale.Scale = 0.05
+			window.GroupTransparency = 1
+			rootStroke.Transparency = 1
+			root.Visible = true
+		end
+		tween(root, 0.7, { Position = menuPos }, Enum.EasingStyle.Quint)
+		tween(uiScale, 0.7, { Scale = currentScale() }, Enum.EasingStyle.Back)
+		tween(window, 0.45, { GroupTransparency = 0 })
+		tween(rootStroke, 0.45, { Transparency = 0 })
+		task.delay(0.4, function()
+			if menuVisible and currentTab then popRows(currentTab) end
+		end)
+	else
+		tween(root, 0.5, { Position = fabCenter() }, Enum.EasingStyle.Quint, Enum.EasingDirection.In)
+		tween(uiScale, 0.5, { Scale = 0.05 }, Enum.EasingStyle.Quint, Enum.EasingDirection.In)
+		tween(window, 0.4, { GroupTransparency = 1 })
+		tween(rootStroke, 0.4, { Transparency = 1 })
+		task.delay(0.55, function()
+			if not menuVisible then root.Visible = false end
+		end)
+	end
+end
+
+-- Применить размер меню (из настроек)
+local function applyMenuSize()
+	local size = UDim2.fromOffset(menuW, menuH)
+	if root.Visible and menuVisible then
+		tween(root, 0.3, { Size = size })
+		tween(uiScale, 0.3, { Scale = currentScale() })
+	else
+		root.Size = size
+	end
+end
+
+do
+	local cam0 = workspace.CurrentCamera
+	if cam0 then
+		connect(cam0:GetPropertyChangedSignal("ViewportSize"), function()
+			if menuVisible then tween(uiScale, 0.25, { Scale = currentScale() }) end
+		end)
+	end
+end
+
+makeDraggable(fabHit, fab, function()
+	tween(fabScale, 0.08, { Scale = 0.85 }).Completed:Connect(function()
+		tween(fabScale, 0.35, { Scale = 1 }, Enum.EasingStyle.Back)
+	end)
+	setMenuVisible(not menuVisible)
+end)
+local function saveMenuPos() menuPos = root.Position end
+makeDraggable(dragArea, root, nil, saveMenuPos)
+makeDraggable(titleArea, root, nil, saveMenuPos)
+
+----------------------------------------------------------------
+-- Конструктор вкладок и элементов
+----------------------------------------------------------------
+-- Волна от нажатия (внутри строки)
+local function ripple(layer, x)
+	local w = layer.AbsoluteSize.X
+	if w <= 0 then return end
+	local a = math.clamp((x - layer.AbsolutePosition.X) / w, 0, 1)
+	local r = new("Frame", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(a, 0.5),
+		SizeConstraint = Enum.SizeConstraint.RelativeYY,
+		Size = UDim2.fromScale(0, 0),
+		BackgroundColor3 = THEME.accent2,
+		BackgroundTransparency = 0.55,
+		BorderSizePixel = 0,
+	}, layer)
+	roundCorner(r)
+	tween(r, 0.7, { Size = UDim2.fromScale(5, 5), BackgroundTransparency = 1 }).Completed:Connect(function()
+		r:Destroy()
+	end)
+end
+
+local function createTab(name)
+	local tab = { name = name, y = #tabs * 36, rowScales = {} }
+	local order = 0
+	local function nextOrder()
+		order = order + 1
+		return order
+	end
+
+	tab.btn = new("TextButton", {
+		Position = UDim2.new(0, 8, 0, tab.y),
+		Size = UDim2.new(1, -16, 0, 32),
+		BackgroundTransparency = 1,
+		Text = name,
+		Font = Enum.Font.GothamMedium,
+		TextSize = 13,
+		TextColor3 = THEME.sub,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		AutoButtonColor = false,
+	}, tabHolder)
+	tab.pad = new("UIPadding", { PaddingLeft = UDim.new(0, 16) }, tab.btn)
+
+	tab.page = new("CanvasGroup", {
+		Size = UDim2.fromScale(1, 1),
+		BackgroundTransparency = 1,
+		GroupTransparency = 1,
+		Visible = false,
+	}, content)
+	local scroll = new("ScrollingFrame", {
+		Size = UDim2.fromScale(1, 1),
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		ScrollBarThickness = 3,
+		ScrollBarImageColor3 = "@accent",
+		CanvasSize = UDim2.new(),
+		AutomaticCanvasSize = Enum.AutomaticSize.Y,
+		ScrollingDirection = Enum.ScrollingDirection.Y,
+	}, tab.page)
+	new("UIListLayout", {
+		Padding = UDim.new(0, 8),
+		SortOrder = Enum.SortOrder.LayoutOrder,
+	}, scroll)
+	new("UIPadding", {
+		PaddingTop = UDim.new(0, 6),
+		PaddingLeft = UDim.new(0, 16),
+		PaddingRight = UDim.new(0, 16),
+		PaddingBottom = UDim.new(0, 14),
+	}, scroll)
+
+	connect(tab.btn.MouseEnter, function()
+		if currentTab ~= tab then
+			tween(tab.btn, 0.15, { TextColor3 = THEME.text })
+			tween(tab.pad, 0.2, { PaddingLeft = UDim.new(0, 20) })
+		end
+	end)
+	connect(tab.btn.MouseLeave, function()
+		if currentTab ~= tab then
+			tween(tab.btn, 0.15, { TextColor3 = THEME.sub })
+			tween(tab.pad, 0.2, { PaddingLeft = UDim.new(0, 16) })
+		end
+	end)
+	connect(tab.btn.MouseButton1Click, function() selectTab(tab) end)
+
+	local function baseRow(height)
+		local row = new("Frame", {
+			Size = UDim2.new(1, 0, 0, height),
+			BackgroundColor3 = "@element",
+			BackgroundTransparency = 0.12,
+			LayoutOrder = nextOrder(),
+		}, scroll)
+		corner(row, 8)
+		stroke(row, "@stroke", 1, 0.4)
+		-- слой для волны: создаётся первым, значит рисуется под текстом
+		local layer = new("Frame", {
+			Size = UDim2.fromScale(1, 1),
+			BackgroundTransparency = 1,
+			ClipsDescendants = true,
+		}, row)
+		local sc = new("UIScale", {}, row)
+		table.insert(tab.rowScales, sc)
+		return row, layer
+	end
+
+	local function rowLabel(row, text, y, w)
+		return new("TextLabel", {
+			Position = UDim2.new(0, 14, 0, y),
+			Size = UDim2.new(w or 1, -(w and 0 or 90), 0, 20),
+			BackgroundTransparency = 1,
+			Text = text,
+			Font = Enum.Font.GothamMedium,
+			TextSize = 14,
+			TextColor3 = "@text",
+			TextXAlignment = Enum.TextXAlignment.Left,
+		}, row)
+	end
+
+	local function rowValue(row, y)
+		return new("TextLabel", {
+			AnchorPoint = Vector2.new(1, 0),
+			Position = UDim2.new(1, -14, 0, y),
+			Size = UDim2.fromOffset(90, 20),
+			BackgroundTransparency = 1,
+			Font = Enum.Font.GothamBold,
+			TextSize = 14,
+			TextColor3 = "@accent2",
+			TextXAlignment = Enum.TextXAlignment.Right,
+		}, row)
+	end
+
+	local function hover(row, hit)
+		connect(hit.MouseEnter, function()
+			tween(row, 0.2, { BackgroundColor3 = THEME.elementHover })
+		end)
+		connect(hit.MouseLeave, function()
+			tween(row, 0.25, { BackgroundColor3 = THEME.element })
+		end)
+	end
+
+	-- Заголовок секции
+	function tab.Section(text)
+		local f = new("Frame", {
+			Size = UDim2.new(1, 0, 0, 24),
+			BackgroundTransparency = 1,
+			LayoutOrder = nextOrder(),
+		}, scroll)
+		new("TextLabel", {
+			Position = UDim2.fromOffset(2, 2),
+			Size = UDim2.new(1, 0, 0, 16),
+			BackgroundTransparency = 1,
+			Text = string.upper(text),
+			Font = Enum.Font.GothamBold,
+			TextSize = 11,
+			TextColor3 = "@accent2",
+			TextXAlignment = Enum.TextXAlignment.Left,
+		}, f)
+		local line = new("Frame", {
+			AnchorPoint = Vector2.new(0, 1),
+			Position = UDim2.fromScale(0, 1),
+			Size = UDim2.new(1, 0, 0, 1),
+			BackgroundColor3 = Color3.new(1, 1, 1),
+			BorderSizePixel = 0,
+		}, f)
+		local g = accentGradient(line, 0)
+		g.Transparency = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, 0.1),
+			NumberSequenceKeypoint.new(1, 1),
+		})
+	end
+
+	-- Переключатель
+	function tab.Toggle(text, desc, default, callback)
+		local row, layer = baseRow(desc and 56 or 44)
+		new("TextLabel", {
+			Position = UDim2.new(0, 14, 0, desc and 9 or 0),
+			Size = UDim2.new(1, -80, 0, desc and 20 or 44),
+			BackgroundTransparency = 1,
+			Text = text,
+			Font = Enum.Font.GothamMedium,
+			TextSize = 14,
+			TextColor3 = "@text",
+			TextXAlignment = Enum.TextXAlignment.Left,
+		}, row)
+		if desc then
+			new("TextLabel", {
+				Position = UDim2.new(0, 14, 0, 29),
+				Size = UDim2.new(1, -80, 0, 16),
+				BackgroundTransparency = 1,
+				Text = desc,
+				Font = Enum.Font.Gotham,
+				TextSize = 11,
+				TextColor3 = "@sub",
+				TextXAlignment = Enum.TextXAlignment.Left,
+				TextTruncate = Enum.TextTruncate.AtEnd,
+			}, row)
+		end
+
+		local hit = new("TextButton", {
+			Size = UDim2.fromScale(1, 1),
+			BackgroundTransparency = 1,
+			Text = "",
+			ZIndex = 3,
+		}, row)
+		local switch = new("Frame", {
+			AnchorPoint = Vector2.new(1, 0.5),
+			Position = UDim2.new(1, -14, 0.5, 0),
+			Size = UDim2.fromOffset(40, 22),
+			BackgroundColor3 = THEME.off,
+		}, row)
+		roundCorner(switch)
+		local glow = stroke(switch, "@accent2", 1.5, 1)
+		local knob = new("Frame", {
+			AnchorPoint = Vector2.new(0, 0.5),
+			Position = UDim2.new(0, 3, 0.5, 0),
+			Size = UDim2.fromOffset(16, 16),
+			BackgroundColor3 = Color3.new(1, 1, 1),
+		}, switch)
+		roundCorner(knob)
+
+		local state = false
+		local function set(v, silent)
+			state = v
+			tween(switch, 0.3, { BackgroundColor3 = v and THEME.accent or THEME.off })
+			tween(glow, 0.3, { Transparency = v and 0.35 or 1 })
+			tween(knob, 0.35, {
+				Position = v and UDim2.new(1, -19, 0.5, 0) or UDim2.new(0, 3, 0.5, 0),
+			}, Enum.EasingStyle.Back)
+			if not silent then task.spawn(callback, v) end
+		end
+		table.insert(refreshers, function()
+			tween(switch, 0.4, { BackgroundColor3 = state and THEME.accent or THEME.off })
+		end)
+
+		connect(hit.InputBegan, function(input)
+			if isPress(input) then ripple(layer, input.Position.X) end
+		end)
+		connect(hit.MouseButton1Click, function() set(not state) end)
+		hover(row, hit)
+		if default then set(true, true) end
+		return { Set = set }
+	end
+
+	-- Ползунок (fmt - необязательная функция форматирования значения)
+	function tab.Slider(text, min, max, default, callback, fmt)
+		local row = baseRow(58)
+		rowLabel(row, text, 8, 1)
+		local valueLabel = rowValue(row, 8)
+		local valueScale = new("UIScale", {}, valueLabel)
+		local track = new("Frame", {
+			Position = UDim2.new(0, 14, 0, 40),
+			Size = UDim2.new(1, -28, 0, 6),
+			BackgroundColor3 = "@off",
+		}, row)
+		roundCorner(track)
+		local fill = new("Frame", {
+			Size = UDim2.fromScale(0, 1),
+			BackgroundColor3 = Color3.new(1, 1, 1),
+		}, track)
+		roundCorner(fill)
+		accentGradient(fill, 0)
+		local knob = new("Frame", {
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Position = UDim2.fromScale(0, 0.5),
+			Size = UDim2.fromOffset(14, 14),
+			BackgroundColor3 = Color3.new(1, 1, 1),
+			ZIndex = 3,
+		}, track)
+		roundCorner(knob)
+		local knobGlow = stroke(knob, "@accent2", 3, 1)
+		local hit = new("TextButton", {
+			AnchorPoint = Vector2.new(0, 0.5),
+			Position = UDim2.fromScale(0, 0.5),
+			Size = UDim2.new(1, 0, 0, 30),
+			BackgroundTransparency = 1,
+			Text = "",
+			ZIndex = 4,
+		}, track)
+
+		local value = default
+		local function render(v, animate)
+			local a = (v - min) / (max - min)
+			valueLabel.Text = fmt and fmt(v) or tostring(v)
+			if animate then
+				tween(fill, 0.1, { Size = UDim2.fromScale(a, 1) }, Enum.EasingStyle.Quad)
+				tween(knob, 0.1, { Position = UDim2.fromScale(a, 0.5) }, Enum.EasingStyle.Quad)
+			else
+				fill.Size = UDim2.fromScale(a, 1)
+				knob.Position = UDim2.fromScale(a, 0.5)
+			end
+		end
+		local function setValue(v)
+			if v ~= value then
+				value = v
+				render(v, true)
+				valueScale.Scale = 1.2
+				tween(valueScale, 0.2, { Scale = 1 })
+				task.spawn(callback, v)
+			end
+		end
+		local function setFromX(x)
+			local a = math.clamp((x - track.AbsolutePosition.X) / track.AbsoluteSize.X, 0, 1)
+			setValue(math.floor(min + (max - min) * a + 0.5))
+		end
+
+		local dragging = false
+		connect(hit.InputBegan, function(input)
+			if isPress(input) then
+				dragging = true
+				scroll.ScrollingEnabled = false
+				tween(knob, 0.2, { Size = UDim2.fromOffset(19, 19) }, Enum.EasingStyle.Back)
+				tween(knobGlow, 0.2, { Transparency = 0.5 })
+				setFromX(input.Position.X)
+			end
+		end)
+		connect(UIS.InputChanged, function(input)
+			if dragging and isMove(input) then setFromX(input.Position.X) end
+		end)
+		connect(UIS.InputEnded, function(input)
+			if dragging and isPress(input) then
+				dragging = false
+				scroll.ScrollingEnabled = true
+				tween(knob, 0.25, { Size = UDim2.fromOffset(14, 14) })
+				tween(knobGlow, 0.3, { Transparency = 1 })
+			end
+		end)
+
+		render(default, false)
+		task.spawn(callback, default)
+		return { Set = function(v) setValue(math.clamp(v, min, max)) end }
+	end
+
+	-- Кнопка
+	function tab.Button(text, callback)
+		local row, layer = baseRow(40)
+		local btn = new("TextButton", {
+			Size = UDim2.fromScale(1, 1),
+			BackgroundTransparency = 1,
+			Text = text,
+			Font = Enum.Font.GothamMedium,
+			TextSize = 14,
+			TextColor3 = "@text",
+			AutoButtonColor = false,
+			ZIndex = 3,
+		}, row)
+		hover(row, btn)
+		connect(btn.InputBegan, function(input)
+			if isPress(input) then ripple(layer, input.Position.X) end
+		end)
+		connect(btn.MouseButton1Click, function()
+			task.spawn(function()
+				tween(row, 0.08, { BackgroundColor3 = THEME.accent }).Completed:Wait()
+				tween(row, 0.35, { BackgroundColor3 = THEME.element })
+			end)
+			task.spawn(callback)
+		end)
+	end
+
+	-- Текст
+	function tab.Label(text, height)
+		local row = baseRow(height or 40)
+		new("TextLabel", {
+			Position = UDim2.new(0, 12, 0, 0),
+			Size = UDim2.new(1, -24, 1, 0),
+			BackgroundTransparency = 1,
+			Text = text,
+			Font = Enum.Font.Gotham,
+			TextSize = 12,
+			TextColor3 = "@sub",
+			TextWrapped = true,
+			TextXAlignment = Enum.TextXAlignment.Left,
+		}, row)
+	end
+
+	-- Сегментированный выбор (несколько вариантов)
+	function tab.Choice(text, options, default, callback)
+		local row = baseRow(58)
+		rowLabel(row, text, 6, 1)
+		local seg = new("Frame", {
+			Position = UDim2.new(0, 14, 0, 30),
+			Size = UDim2.new(1, -28, 0, 22),
+			BackgroundColor3 = "@off",
+			BackgroundTransparency = 0.35,
+		}, row)
+		corner(seg, 8)
+		local n = #options
+		local hl = new("Frame", {
+			Size = UDim2.new(1 / n, -4, 1, -4),
+			Position = UDim2.new(0, 2, 0, 2),
+			BackgroundColor3 = "@accent",
+			BorderSizePixel = 0,
+		}, seg)
+		corner(hl, 6)
+		local buttons, current = {}, nil
+		local function select(name, silent)
+			current = name
+			for i, opt in ipairs(options) do
+				local on = (opt == name)
+				if on then
+					tween(hl, 0.35, { Position = UDim2.new((i - 1) / n, 2, 0, 2) }, Enum.EasingStyle.Back)
+				end
+				tween(buttons[opt], 0.25, { TextColor3 = on and THEME.text or THEME.sub })
+			end
+			if not silent then task.spawn(callback, name) end
+		end
+		for i, opt in ipairs(options) do
+			local b = new("TextButton", {
+				Position = UDim2.new((i - 1) / n, 0, 0, 0),
+				Size = UDim2.new(1 / n, 0, 1, 0),
+				BackgroundTransparency = 1,
+				Text = opt,
+				Font = Enum.Font.GothamMedium,
+				TextSize = 12,
+				TextColor3 = THEME.sub,
+				AutoButtonColor = false,
+				ZIndex = 3,
+			}, seg)
+			buttons[opt] = b
+			connect(b.MouseButton1Click, function() select(opt) end)
+		end
+		table.insert(refreshers, function()
+			for _, opt in ipairs(options) do
+				tween(buttons[opt], 0.3, { TextColor3 = (opt == current) and THEME.text or THEME.sub })
+			end
+		end)
+		select(default, true)
+	end
+
+	-- Кружки-образцы. list = { {name=, seq=ColorSequence}, ... }
+	function tab.ColorPick(text, list, default, callback)
+		local row = baseRow(68)
+		rowLabel(row, text, 8, 0.5)
+		local valueLabel = rowValue(row, 8)
+		local buttons = {}
+		local function select(name, silent)
+			valueLabel.Text = name
+			for n, b in pairs(buttons) do
+				local on = (n == name)
+				tween(b.stroke, 0.25, { Transparency = on and 0 or 0.85 })
+				tween(b.scale, 0.35, { Scale = on and 1.2 or 1 }, Enum.EasingStyle.Back)
+			end
+			if not silent then task.spawn(callback, name) end
+		end
+		for i, entry in ipairs(list) do
+			local sw = new("TextButton", {
+				Position = UDim2.fromOffset(16 + (i - 1) * 26, 38),
+				Size = UDim2.fromOffset(20, 20),
+				BackgroundColor3 = Color3.new(1, 1, 1),
+				Text = "",
+				AutoButtonColor = false,
+				ZIndex = 3,
+			}, row)
+			roundCorner(sw)
+			new("UIGradient", { Color = entry.seq, Rotation = 45 }, sw)
+			buttons[entry.name] = {
+				stroke = stroke(sw, Color3.new(1, 1, 1), 2, 0.85),
+				scale = new("UIScale", {}, sw),
+			}
+			connect(sw.MouseButton1Click, function() select(entry.name) end)
+		end
+		select(default, true)
+	end
+
+	-- Выбор темы (цветные кружки)
+	function tab.Swatches(text, names, callback)
+		local row = baseRow(48)
+		new("TextLabel", {
+			Position = UDim2.new(0, 14, 0, 0),
+			Size = UDim2.new(0.4, 0, 1, 0),
+			BackgroundTransparency = 1,
+			Text = text,
+			Font = Enum.Font.GothamMedium,
+			TextSize = 14,
+			TextColor3 = "@text",
+			TextXAlignment = Enum.TextXAlignment.Left,
+		}, row)
+		local buttons = {}
+		local function select(name, silent)
+			for n, b in pairs(buttons) do
+				local on = (n == name)
+				tween(b.stroke, 0.25, { Transparency = on and 0 or 0.85 })
+				tween(b.scale, 0.35, { Scale = on and 1.2 or 1 }, Enum.EasingStyle.Back)
+			end
+			if not silent then task.spawn(callback, name) end
+		end
+		for i, name in ipairs(names) do
+			local th = THEMES[name]
+			local sw = new("TextButton", {
+				AnchorPoint = Vector2.new(1, 0.5),
+				Position = UDim2.new(1, -14 - (#names - i) * 32, 0.5, 0),
+				Size = UDim2.fromOffset(24, 24),
+				BackgroundColor3 = Color3.new(1, 1, 1),
+				Text = "",
+				AutoButtonColor = false,
+				ZIndex = 3,
+			}, row)
+			roundCorner(sw)
+			new("UIGradient", {
+				Color = ColorSequence.new(th.accent, th.accent2),
+				Rotation = 45,
+			}, sw)
+			buttons[name] = {
+				stroke = stroke(sw, Color3.new(1, 1, 1), 2, 0.85),
+				scale = new("UIScale", {}, sw),
+			}
+			connect(sw.MouseButton1Click, function() select(name) end)
+		end
+		select("Dragon", true)
+	end
+
+	table.insert(tabs, tab)
+	return tab
+end
+
+----------------------------------------------------------------
+-- Вкладки (порядок: Player, Visuals, FE Function, Social Networks, Settings)
+----------------------------------------------------------------
+local playerTab = createTab("Player")
+local visualsTab = createTab("Visuals")
+local feTab = createTab("FE Function")
+local socialTab = createTab("Social Networks")
+local settingsTab = createTab("Settings")
+
+local function fmtDist(v) return v >= DIST_MAX and "MAX" or tostring(v) end
+local function fmtPct(v) return v .. "%" end
+
+---------------------------- Player ----------------------------
+playerTab.Section("Movement")
+playerTab.Toggle("Fly", "Вверх: Space/E, вниз: Q/Ctrl, на телефоне - ▲▼", false, setFly)
+playerTab.Slider("Fly Speed", 10, 300, Fly.speed, function(v) Fly.speed = v end)
+playerTab.Toggle("Speed", "Своя скорость бега", false, setWalk)
+playerTab.Slider("WalkSpeed", 16, 300, State.walk, function(v) State.walk = v end)
+playerTab.Toggle("High Jump", "Своя сила прыжка", false, setJump)
+playerTab.Slider("JumpPower", 50, 500, State.jump, function(v) State.jump = v end)
+playerTab.Toggle("Infinite Jump", "Прыжки в воздухе без ограничений", false, function(v)
+	State.infJump = v
+end)
+
+playerTab.Section("Protection")
+playerTab.Toggle("Noclip", "Проход сквозь стены и объекты", false, setNoclip)
+playerTab.Toggle("God Mode", "Клиентский режим бога (работает не везде)", false, setGod)
+
+---------------------------- Visuals ----------------------------
+visualsTab.Section("Aimbot")
+visualsTab.Toggle("Aimbot", "Наводит камеру на ближайшего к центру экрана", false, function(v)
+	Aim.enabled = v
+end)
+visualsTab.Choice("Aim Part", { "Head", "Torso" }, Aim.part, function(v) Aim.part = v end)
+visualsTab.Choice("Mode", { "Always", "Hold RMB" }, Aim.mode, function(v) Aim.mode = v end)
+visualsTab.Slider("FOV", 30, 500, Aim.fov, function(v)
+	Aim.fov = v
+	fovCircle.Size = UDim2.fromOffset(v * 2, v * 2)
+end)
+visualsTab.Toggle("Show FOV Circle", nil, Aim.showFov, function(v) Aim.showFov = v end)
+visualsTab.Slider("Smoothness", 0, 95, Aim.smooth, function(v) Aim.smooth = v end, fmtPct)
+visualsTab.Toggle("Team Check", "Не целиться в свою команду", Aim.teamCheck, function(v) Aim.teamCheck = v end)
+visualsTab.Toggle("Wall Check", "Целиться только в тех, кого видно", false, function(v) Aim.wallCheck = v end)
+visualsTab.Slider("Aim Distance", 100, DIST_MAX, Aim.maxDist, function(v) Aim.maxDist = v end, fmtDist)
+
+visualsTab.Section("ESP Lines")
+visualsTab.Toggle("ESP Lines", "Линии от экрана к игрокам", false, function(v) ESP.enabled = v end)
+visualsTab.Choice("Line Origin", { "Bottom", "Center", "Top" }, ESP.origin, function(v) ESP.origin = v end)
+visualsTab.Choice("Line Target", { "Head", "Body", "Feet" }, ESP.target, function(v) ESP.target = v end)
+visualsTab.ColorPick("Line Color", ESP_COLORS, ESP.color, function(v) ESP.color = v end)
+visualsTab.Slider("Thickness", 1, 8, ESP.thickness, function(v) ESP.thickness = v end)
+visualsTab.Slider("Opacity", 10, 100, math.floor(ESP.opacity * 100), function(v)
+	ESP.opacity = v / 100
+end, fmtPct)
+visualsTab.Slider("ESP Distance", 100, DIST_MAX, ESP.maxDist, function(v) ESP.maxDist = v end, fmtDist)
+visualsTab.Toggle("Team Check", "Не показывать свою команду", false, function(v) ESP.teamCheck = v end)
+visualsTab.Toggle("Names", "Ник у конца линии", false, function(v) ESP.names = v end)
+visualsTab.Toggle("Distance", "Расстояние до игрока", false, function(v) ESP.distance = v end)
+
+---------------------------- FE Function ----------------------------
+feTab.Section("Avatar")
+local avatarToggle
+avatarToggle = feTab.Toggle("Copy Avatar", "Копия аватара по нику, его видят все", false, function(v)
+	if v then
+		Dialog.open(function(ok)
+			if not ok then avatarToggle.Set(false, true) end
+		end)
+	elseif Avatar.active then
+		Avatar.restore()
+	end
+end)
+feTab.Toggle("Auto Respawn", "Респавн после копирования, чтобы аватар обновился", true, function(v)
+	Avatar.autoRespawn = v
+end)
+feTab.Button("Restore My Avatar", function()
+	avatarToggle.Set(false, true)
+	Avatar.restore()
+end)
+feTab.Label(
+	"Roblox не даёт скрипту менять внешность для других напрямую, поэтому аватар сохраняется на аккаунте "
+	.. "через официальное окно Roblox (подтверждаешь сам). Наденутся только вещи, которые есть у тебя.",
+	78
+)
+
+---------------------------- Social Networks ----------------------------
+socialTab.Label("Скоро...", 40)
+
+---------------------------- Settings ----------------------------
+settingsTab.Section("Appearance")
+settingsTab.Swatches("Theme", THEME_ORDER, setTheme)
+settingsTab.Toggle("Particles", "Летающие искры в меню", State.particles, function(v)
+	State.particles = v
+	for _, p in ipairs(particles) do
+		if not v then p.f.BackgroundTransparency = 1 end
+	end
+end)
+
+settingsTab.Section("Menu Size")
+local scaleSlider = settingsTab.Slider("Menu Scale", 50, 130, 100, function(v)
+	menuScale = v / 100
+	applyMenuSize()
+end, fmtPct)
+local widthSlider = settingsTab.Slider("Menu Width", 460, 700, menuW, function(v)
+	menuW = v
+	applyMenuSize()
+end)
+local heightSlider = settingsTab.Slider("Menu Height", 290, 480, menuH, function(v)
+	menuH = v
+	applyMenuSize()
+end)
+settingsTab.Button("Reset Size", function()
+	scaleSlider.Set(100)
+	widthSlider.Set(540)
+	heightSlider.Set(320)
+end)
+
+settingsTab.Section("Utility")
+settingsTab.Toggle("Anti-AFK", "Не даёт кикнуть за бездействие", false, function(v)
+	State.antiAfk = v
+end)
+settingsTab.Button("Reset Character", respawn)
+settingsTab.Button("Rejoin", function()
+	pcall(function()
+		game:GetService("TeleportService"):Teleport(game.PlaceId, LocalPlayer)
+	end)
+end)
+
+settingsTab.Section("Script")
+settingsTab.Label("Меню: тап по жемчужине с драконами (её можно перетаскивать) или RightShift на ПК.", 44)
+settingsTab.Button("Выгрузить скрипт", function()
+	env.InstallerScriptsUnload(true)
+end)
+
+----------------------------------------------------------------
+-- Выгрузка
+----------------------------------------------------------------
+local function unload(animated)
+	local function destroyAll()
+		pcall(function()
+			setFly(false)
+			setWalk(false)
+			setJump(false)
+			setGod(false)
+			setNoclip(false)
+		end)
+		pcall(function() RunService:UnbindFromRenderStep("InstallerScripts_Main") end)
+		for _, c in ipairs(connections) do pcall(function() c:Disconnect() end) end
+		connections = {}
+		if gui then gui:Destroy() end
+		env.InstallerScriptsUnload = nil
+	end
+	if animated then
+		setMenuVisible(false)
+		tween(fabScale, 0.4, { Scale = 0 }, Enum.EasingStyle.Back, Enum.EasingDirection.In)
+		tween(padScale, 0.2, { Scale = 0 })
+		ESP.enabled, Aim.enabled = false, false
+		ESP.hideAll()
+		fovCircle.Visible = false
+		task.delay(0.6, destroyAll)
+	else
+		destroyAll()
+	end
+end
+env.InstallerScriptsUnload = unload
+
+connect(hideBtn.MouseButton1Click, function() setMenuVisible(false) end)
+connect(closeBtn.MouseButton1Click, function() unload(true) end)
+
+connect(UIS.InputBegan, function(input, gp)
+	if not gp and input.KeyCode == Enum.KeyCode.RightShift then
+		setMenuVisible(not menuVisible)
+	end
+end)
+
+----------------------------------------------------------------
+-- Главный цикл анимаций
+----------------------------------------------------------------
+local startClock = os.clock()
+local dClock, dSpeed = 0, 1.8
+
+connect(RunService.RenderStepped, function(dt)
+	local t = os.clock() - startClock
+
+	-- драконы: быстрее, когда меню закрыто, и спокойнее, когда открыто
+	local targetSpeed = menuVisible and 1.1 or 1.9
+	dSpeed = dSpeed + (targetSpeed - dSpeed) * math.clamp(dt * 3, 0, 1)
+	dClock = dClock + dt * dSpeed
+	for _, d in ipairs(dragons) do updateDragon(d, dClock) end
+
+	-- жемчужина: «дыхание», переливы, блик, мерцание
+	pearlScale.Scale = 1 + math.sin(t * 2.2) * 0.04
+	pearlGrad.Rotation = (45 + t * 70) % 360
+	gloss.BackgroundTransparency = 0.7 + math.sin(t * 2.2) * 0.1
+	local ph = (t * 0.7) % 1
+	halo.Size = UDim2.fromOffset(48 + ph * 30, 48 + ph * 30)
+	haloStroke.Transparency = 0.25 + ph * 0.75
+	for _, s in ipairs(sparkles) do
+		local k = (math.sin(t * 2.4 + s.ph) + 1) / 2
+		s.f.Size = UDim2.fromOffset(2 + k * 4, 2 + k * 4)
+		s.f.BackgroundTransparency = 0.15 + (1 - k) * 0.8
+	end
+
+	if not root.Visible then return end
+
+	-- вращающаяся рамка, блик на заголовке, дыхание индикатора
+	borderGrad.Rotation = (t * 45) % 360
+	titleGrad.Offset = Vector2.new(((t * 0.5) % 2) - 1, 0)
+	indicator.BackgroundTransparency = 0.8 + math.sin(t * 2.5) * 0.05
+	watermark.Rotation = math.sin(t * 0.7) * 5
+
+	-- искры поднимаются вверх
+	if State.particles then
+		for _, p in ipairs(particles) do
+			p.prog = p.prog + dt * p.speed
+			if p.prog > 1 then
+				p.prog = 0
+				p.x = math.random()
+			end
+			p.f.Position = UDim2.fromScale(
+				p.x + math.sin(t * 1.2 + p.phase) * p.amp,
+				1.05 - p.prog * 1.1
+			)
+			p.f.BackgroundTransparency = 1 - math.sin(p.prog * math.pi) * 0.7
+		end
+	end
+end)
+
+----------------------------------------------------------------
+-- Интро при запуске
+----------------------------------------------------------------
+local function playIntro()
+	local cam = workspace.CurrentCamera
+	local vp = cam and cam.ViewportSize or Vector2.new(1280, 720)
+	local k = math.clamp(vp.Y / 430, 0.5, 1)
+
+	local layer = new("Frame", {
+		Name = "Intro",
+		Size = UDim2.fromScale(1, 1),
+		BackgroundTransparency = 1,
+	}, gui)
+	local dim = new("Frame", {
+		Size = UDim2.fromScale(1, 1),
+		BackgroundColor3 = Color3.new(0, 0, 0),
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+	}, layer)
+	local box = new("Frame", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.fromOffset(400, 300),
+		BackgroundTransparency = 1,
+	}, layer)
+	new("UIScale", { Scale = k }, box)
+
+	-- название по буквам
+	local word = "installerScripts"
+	local row = new("Frame", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromOffset(200, 196),
+		Size = UDim2.fromOffset(400, 36),
+		BackgroundTransparency = 1,
+	}, box)
+	new("UIListLayout", {
+		FillDirection = Enum.FillDirection.Horizontal,
+		HorizontalAlignment = Enum.HorizontalAlignment.Center,
+		VerticalAlignment = Enum.VerticalAlignment.Center,
+		SortOrder = Enum.SortOrder.LayoutOrder,
+	}, row)
+	local letters = {}
+	for i = 1, #word do
+		local lb = new("TextLabel", {
+			Size = UDim2.new(0, 0, 1, 0),
+			AutomaticSize = Enum.AutomaticSize.X,
+			BackgroundTransparency = 1,
+			Text = word:sub(i, i),
+			Font = Enum.Font.GothamBold,
+			TextSize = 30,
+			TextColor3 = (i <= 9) and THEME.accent2 or THEME.accent,
+			TextTransparency = 1,
+			LayoutOrder = i,
+		}, row)
+		letters[i] = { lb = lb, sc = new("UIScale", { Scale = 0 }, lb) }
+	end
+
+	local underline = new("Frame", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromOffset(200, 224),
+		Size = UDim2.fromOffset(0, 2),
+		BackgroundColor3 = Color3.new(1, 1, 1),
+		BorderSizePixel = 0,
+	}, box)
+	accentGradient(underline, 0)
+
+	local sub = new("TextLabel", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromOffset(200, 242),
+		Size = UDim2.fromOffset(300, 16),
+		BackgroundTransparency = 1,
+		Text = "dragon edition  v2.1",
+		Font = Enum.Font.Gotham,
+		TextSize = 12,
+		TextColor3 = THEME.sub,
+		TextTransparency = 1,
+	}, box)
+	local status = new("TextLabel", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromOffset(200, 268),
+		Size = UDim2.fromOffset(300, 14),
+		BackgroundTransparency = 1,
+		Text = "",
+		Font = Enum.Font.GothamMedium,
+		TextSize = 11,
+		TextColor3 = THEME.accent2,
+		TextTransparency = 1,
+	}, box)
+	local track = new("Frame", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromOffset(200, 286),
+		Size = UDim2.fromOffset(220, 4),
+		BackgroundColor3 = THEME.off,
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+	}, box)
+	roundCorner(track)
+	local fill = new("Frame", {
+		Size = UDim2.fromScale(0, 1),
+		BackgroundColor3 = Color3.new(1, 1, 1),
+		BorderSizePixel = 0,
+	}, track)
+	roundCorner(fill)
+	accentGradient(fill, 0)
+
+	-- 1) затемнение, жемчужина вылетает в центр
+	tween(dim, 0.4, { BackgroundTransparency = 0.3 })
+	task.wait(0.15)
+	fab.Position = UDim2.new(0.5, 0, 0.5, -55 * k)
+	tween(fabScale, 0.8, { Scale = 1.7 * k }, Enum.EasingStyle.Back)
+	task.wait(0.5)
+
+	-- 2) буквы выскакивают по очереди
+	for i, L in ipairs(letters) do
+		task.delay(i * 0.045, function()
+			tween(L.sc, 0.4, { Scale = 1 }, Enum.EasingStyle.Back)
+			tween(L.lb, 0.3, { TextTransparency = 0 })
+		end)
+	end
+	task.wait(0.5)
+	tween(underline, 0.7, { Size = UDim2.fromOffset(240, 2) })
+	tween(sub, 0.5, { TextTransparency = 0.2 })
+	tween(status, 0.4, { TextTransparency = 0 })
+	tween(track, 0.4, { BackgroundTransparency = 0.4 })
+	task.wait(0.3)
+
+	-- 3) полоса загрузки
+	local steps = { "Initializing...", "Loading modules...", "Building interface...", "Ready" }
+	tween(fill, 1.3, { Size = UDim2.fromScale(1, 1) }, Enum.EasingStyle.Sine)
+	for i, s in ipairs(steps) do
+		status.Text = s
+		task.wait(i == #steps and 0.25 or 0.32)
+	end
+
+	-- 4) всё исчезает, жемчужина летит на своё место
+	for _, L in ipairs(letters) do
+		tween(L.sc, 0.35, { Scale = 0 }, Enum.EasingStyle.Back, Enum.EasingDirection.In)
+		tween(L.lb, 0.3, { TextTransparency = 1 })
+	end
+	tween(underline, 0.4, { Size = UDim2.fromOffset(0, 2) })
+	tween(sub, 0.3, { TextTransparency = 1 })
+	tween(status, 0.3, { TextTransparency = 1 })
+	tween(track, 0.3, { BackgroundTransparency = 1 })
+	tween(fill, 0.3, { BackgroundTransparency = 1 })
+	tween(dim, 0.6, { BackgroundTransparency = 1 })
+	tween(fabScale, 0.8, { Scale = 1 }, Enum.EasingStyle.Quint)
+	tween(fab, 0.8, { Position = UDim2.new(0, 60, 0.5, 0) }, Enum.EasingStyle.Quint)
+	task.wait(0.85)
+	layer:Destroy()
+end
+
+----------------------------------------------------------------
+-- Старт
+----------------------------------------------------------------
+applyMenuSize()
+playIntro()
+setMenuVisible(true)
+task.delay(0.45, function() selectTab(playerTab) end)
+task.delay(1.2, function() toast("installerScripts v2.1 loaded", "ok") end)
